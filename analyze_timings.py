@@ -114,7 +114,7 @@ class TimingResultsAnalyzer:
             "total_med": median(t_total_ms),
         }
 
-    def analyze(self) -> None:
+    def analyze(self, *, output_path: Path | str | None = None) -> None:
         """
         Анализирует результаты и выводит статистику в консоль.
 
@@ -123,7 +123,9 @@ class TimingResultsAnalyzer:
         - Средние и медианные значения времени обновления центроидов
         - Средние и медианные значения времени одной итерации
         - Средние и медианные значения общего времени выполнения
+        Если указан output_path, дополнительно пишет сводку в файл (UTF-8).
         """
+        lines: list[str] = []
         for entry in self._iter_results():
             exp = entry.get("experiment", "unknown")
             impl = entry.get("implementation", "unknown")
@@ -164,9 +166,35 @@ class TimingResultsAnalyzer:
             )
             print()
 
+            lines.extend(
+                [
+                    f"Эксперимент: {exp}, реализация: {impl}",
+                    f"  Датасет: N={dataset_info.get('N')}, "
+                    f"D={dataset_info.get('D')}, "
+                    f"K={dataset_info.get('K')}",
+                    f"  Tназначения (одна итерация): "
+                    f"ср={stats['assign_mean']:.3f} мс, "
+                    f"мед={stats['assign_med']:.3f} мс",
+                    f"  Tобновления (одна итерация): "
+                    f"ср={stats['update_mean']:.3f} мс, "
+                    f"мед={stats['update_med']:.3f} мс",
+                    f"  Tитерации (одна итерация): "
+                    f"ср={stats['iter_mean']:.3f} мс, "
+                    f"мед={stats['iter_med']:.3f} мс",
+                    f"  Tобщ (один запуск алгоритма): "
+                    f"ср={stats['total_mean']:.3f} мс, "
+                    f"мед={stats['total_med']:.3f} мс",
+                    "",
+                ]
+            )
+
+        if output_path is not None:
+            out = Path(output_path)
+            out.write_text("\n".join(lines), encoding="utf-8")
+
 
 def compute_stats_from_results(
-    json_path: str | Path, n_iters: int = 100
+    json_path: str | Path, n_iters: int = 100, *, output_path: str | Path | None = None
 ) -> None:
     """
     Удобная функция для быстрого анализа результатов.
@@ -174,6 +202,7 @@ def compute_stats_from_results(
     Args:
         json_path: Путь к файлу с результатами
         n_iters: Количество итераций алгоритма
+        output_path: Путь для сохранения текстовой сводки (опционально)
     """
     analyzer = TimingResultsAnalyzer(json_path, n_iters)
-    analyzer.analyze()
+    analyzer.analyze(output_path=output_path)

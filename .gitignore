@@ -82,4 +82,4 @@ $RECYCLE.BIN/
 *.log
 
 kmeans_timing_results.json
-
+timings_report.txt
