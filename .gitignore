@@ -80,3 +80,6 @@ $RECYCLE.BIN/
 
 # Логи
 *.log
+
+kmeans_timing_results.json
+
