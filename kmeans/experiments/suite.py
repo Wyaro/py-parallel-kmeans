@@ -249,7 +249,26 @@ class ExperimentSuite:
                         ),
                     ]
                 )
-            impls.extend(self._gpu_variants())
+
+            # GPU-реализации подбираем с учётом размера датасета.
+            # Для очень больших N отключаем «тяжёлые» варианты, которые требуют O(N*K*D) памяти.
+            gpu_impls = self._gpu_variants()
+            N_val = int(info.get("N", 0) or 0)
+            if N_val >= 1_000_000:
+                # Оставляем только более компактные варианты (fast/raw),
+                # которые не материализуют полный тензор (N, K, D).
+                gpu_impls = [
+                    (name, factory)
+                    for name, factory in gpu_impls
+                    if name in ("python_gpu_cupy_fast", "python_gpu_cupy_raw")
+                ]
+                if not gpu_impls:
+                    self.logger.warning(
+                        f"[scaling_N {idx}/{len(infos)}] No GPU variants left for N={N_val}, "
+                        "skipping GPU implementations for this dataset."
+                    )
+
+            impls.extend(gpu_impls)
 
             for impl_name, factory in impls:
                 self.logger.info(
