@@ -812,13 +812,13 @@ model.fit(X, initial_centroids)
 
 Несколько оптимизированных GPU-реализаций на CuPy.
 
-#### Базовая версия (`KMeansGPUCuPy`)
+#### Версия V1 (`KMeansGPUCuPyV1`) - Базовая
 
 **Использование**:
 ```python
-from kmeans.core.gpu_numpy import KMeansGPUCuPy
+from kmeans.core.gpu_numpy import KMeansGPUCuPyV1
 
-model = KMeansGPUCuPy(n_clusters=8)
+model = KMeansGPUCuPyV1(n_clusters=8)
 model.fit(X, initial_centroids)
 ```
 
@@ -826,41 +826,64 @@ model.fit(X, initial_centroids)
 - Прямое вычисление расстояний через broadcasting
 - Использование `einsum` для оптимизации
 - Перенос данных на GPU один раз
+- Память: O(N × K × D) для временного массива diff
 - Адаптивная остановка при сходимости (tol=1e-6) или максимум 100 итераций
 
-#### Оптимизированная версия (`KMeansGPUCuPyFast`)
+#### Версия V2 (`KMeansGPUCuPyV2`) - Оптимизированная
 
 **Использование**:
 ```python
-from kmeans.core.gpu_numpy import KMeansGPUCuPyFast
+from kmeans.core.gpu_numpy import KMeansGPUCuPyV2
 
-model = KMeansGPUCuPyFast(n_clusters=8, dtype=cp.float32)
+model = KMeansGPUCuPyV2(n_clusters=8)
 model.fit(X, initial_centroids)
 ```
 
 **Особенности**:
 - Оптимизированное вычисление расстояний без материализации полного тензора `diff`
 - Использование формулы: `||x - c||² = ||x||² + ||c||² - 2x·c`
-- Эффективная редукция через `bincount` для обновления центроидов
-- Минимизация использования памяти GPU
-- По умолчанию использует `float32` для лучшей производительности
-- Автоматический возврат результатов на CPU
+- Эффективная редукция через `scatter_add` (cp.add.at) для обновления центроидов
+- Память: O(N × K) вместо O(N × K × D)
+- Быстрее V1 за счет оптимизированного assign и update
 
-#### Версия с raw CUDA kernel (`KMeansGPUCuPyRaw`)
+#### Версия V3 (`KMeansGPUCuPyV3`) - Быстрая
 
 **Использование**:
 ```python
-from kmeans.core.gpu_numpy import KMeansGPUCuPyRaw
+from kmeans.core.gpu_numpy import KMeansGPUCuPyV3
 
-model = KMeansGPUCuPyRaw(n_clusters=8, dtype=cp.float32)
+model = KMeansGPUCuPyV3(n_clusters=8)
 model.fit(X, initial_centroids)
 ```
 
 **Особенности**:
-- Кастомный raw CUDA kernel для шага назначения кластеров
+- Та же оптимизированная формула для assign, что и в V2
+- Оптимизированная редукция через `scatter_add`
+- По умолчанию использует `float32` для лучшей производительности (меньше трафик и память)
+- Быстрее V2 за счет использования float32
+
+#### Версия V4 (`KMeansGPUCuPyV4`) - Самая быстрая
+
+**Использование**:
+```python
+from kmeans.core.gpu_numpy import KMeansGPUCuPyV4
+
+model = KMeansGPUCuPyV4(n_clusters=8)
+model.fit(X, initial_centroids)
+```
+
+**Особенности**:
+- Raw CUDA kernel для шага назначения кластеров с ручной оптимизацией
+- Raw CUDA kernel для шага обновления центроидов с атомарными операциями
 - Максимальная производительность для больших датасетов
-- Оптимизированная работа с памятью GPU
 - По умолчанию использует `float32`
+- Быстрее V3 за счет использования raw CUDA kernels
+
+**Примечание**: Для обратной совместимости доступны старые имена:
+- `KMeansGPUCuPy` (алиас для V1)
+- `KMeansGPUCuPyBincount` (алиас для V2)
+- `KMeansGPUCuPyFast` (алиас для V3)
+- `KMeansGPUCuPyRaw` (алиас для V4)
 
 ---
 

@@ -1,9 +1,17 @@
 """
 CUDA/CuPy реализации KMeans для бенчмаркинга.
 
-Варианты:
-- KMeansGPUCuPy: базовая версия с явным вычислением diff (просто и наглядно).
-- KMeansGPUCuPyBincount: версия с редукцией через bincount, без материализации diff.
+Варианты (от медленного к быстрому):
+- KMeansGPUCuPyV1: базовая версия с явным вычислением diff (просто и наглядно).
+- KMeansGPUCuPyV2: оптимизированная версия с матричной формулой без diff.
+- KMeansGPUCuPyV3: быстрая версия с float32 и оптимизациями.
+- KMeansGPUCuPyV4: самая быстрая версия с raw CUDA kernels.
+
+Для обратной совместимости также доступны старые имена:
+- KMeansGPUCuPy (алиас для V1)
+- KMeansGPUCuPyBincount (алиас для V2)
+- KMeansGPUCuPyFast (алиас для V3)
+- KMeansGPUCuPyRaw (алиас для V4)
 """
 
 from __future__ import annotations
@@ -145,9 +153,9 @@ class _KMeansGPUBase(KMeansBase):
         return cp.where(non_empty[:, None], new_centroids, self.centroids)
 
 
-class KMeansGPUCuPy(_KMeansGPUBase):
+class KMeansGPUCuPyV1(_KMeansGPUBase):
     """
-    Базовая реализация через CuPy.
+    Базовая реализация через CuPy (V1 - самая медленная).
 
     Прямое броадкаст-вычисление diff: просто и хорошо читается, но требует памяти O(N*K*D).
     Подходит для умеренных N/K/D и для чистого сравнения с CPU baseline.
@@ -176,11 +184,11 @@ class KMeansGPUCuPy(_KMeansGPUBase):
         return self._merge_centroids(new_centroids, non_empty)
 
 
-class KMeansGPUCuPyBincount(_KMeansGPUBase):
+class KMeansGPUCuPyV2(_KMeansGPUBase):
     """
-    Оптимизированная версия быстрее базовой.
+    Оптимизированная версия быстрее V1 (V2).
 
-    Отличия от базовой версии:
+    Отличия от V1:
     - assign: матричная формула ||x||² + ||c||² - 2x·c без материализации diff (меньше памяти O(N*K) вместо O(N*K*D)).
     - update: оптимизированная редукция через scatter_add (cp.add.at).
     """
@@ -211,11 +219,11 @@ class KMeansGPUCuPyBincount(_KMeansGPUBase):
         return self._merge_centroids(new_centroids, non_empty)
 
 
-class KMeansGPUCuPyFast(_KMeansGPUBase):
+class KMeansGPUCuPyV3(_KMeansGPUBase):
     """
-    Быстрая GPU-версия быстрее bincount.
+    Быстрая GPU-версия быстрее V2 (V3).
 
-    Отличия от bincount:
+    Отличия от V2:
     - assign: та же оптимизированная формула без diff.
     - update: оптимизированная редукция через scatter_add.
     - float32 по умолчанию (меньше трафик и память, быстрее вычисления).
@@ -261,11 +269,11 @@ class KMeansGPUCuPyFast(_KMeansGPUBase):
         return self._merge_centroids(new_centroids, non_empty)
 
 
-class KMeansGPUCuPyRaw(_KMeansGPUBase):
+class KMeansGPUCuPyV4(_KMeansGPUBase):
     """
-    Самая быстрая raw-kernel версия.
+    Самая быстрая raw-kernel версия (V4).
 
-    Отличия от fast:
+    Отличия от V3:
     - assign: raw CUDA kernel с ручной оптимизацией (без materialize diff/GEMM).
     - update: raw CUDA kernel с атомарными операциями для максимальной производительности.
     - float32 по умолчанию для меньшего трафика и памяти.
@@ -391,3 +399,10 @@ class KMeansGPUCuPyRaw(_KMeansGPUBase):
         new_centroids[non_empty] = sums[non_empty] / counts[non_empty, None]
 
         return self._merge_centroids(new_centroids, non_empty)
+
+
+# Алиасы для обратной совместимости
+KMeansGPUCuPy = KMeansGPUCuPyV1
+KMeansGPUCuPyBincount = KMeansGPUCuPyV2
+KMeansGPUCuPyFast = KMeansGPUCuPyV3
+KMeansGPUCuPyRaw = KMeansGPUCuPyV4

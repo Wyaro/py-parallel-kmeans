@@ -12,7 +12,14 @@ from kmeans.core.cpu_multiprocessing import (
     KMeansCPUMultiprocessing,
     MultiprocessingConfig,
 )
-from kmeans.core.gpu_numpy import gpu_available, KMeansGPUCuPy, KMeansGPUCuPyBincount
+from kmeans.core.gpu_numpy import (
+    gpu_available,
+    KMeansGPUCuPyV1,
+    KMeansGPUCuPyV2,
+    # Алиасы для обратной совместимости
+    KMeansGPUCuPy,
+    KMeansGPUCuPyBincount,
+)
 
 
 class TestImplementationConsistency:
@@ -55,7 +62,7 @@ class TestImplementationConsistency:
         model_cpu = KMeansCPUNumpy(n_clusters=2, n_iters=20)
         model_cpu.fit(X, initial_centroids)
 
-        model_gpu = KMeansGPUCuPy(n_clusters=2, n_iters=20)
+        model_gpu = KMeansGPUCuPyV1(n_clusters=2, n_iters=20)
         model_gpu.fit(X, initial_centroids)
 
         # Сравниваем центроиды на CPU
@@ -79,10 +86,10 @@ class TestImplementationConsistency:
         """Две GPU реализации должны давать одинаковые результаты."""
         X, initial_centroids = small_dataset
 
-        model_cupy = KMeansGPUCuPy(n_clusters=2, n_iters=20)
+        model_cupy = KMeansGPUCuPyV1(n_clusters=2, n_iters=20)
         model_cupy.fit(X, initial_centroids)
 
-        model_bincount = KMeansGPUCuPyBincount(n_clusters=2, n_iters=20)
+        model_bincount = KMeansGPUCuPyV2(n_clusters=2, n_iters=20)
         model_bincount.fit(X, initial_centroids)
 
         centroids_cupy_sorted = model_cupy.centroids_cpu[
@@ -117,12 +124,12 @@ class TestImplementationConsistency:
         )
         model_mp.fit(X, initial_centroids)
 
-        # GPU CuPy
-        model_gpu = KMeansGPUCuPy(n_clusters=3, n_iters=15)
+        # GPU CuPy V1
+        model_gpu = KMeansGPUCuPyV1(n_clusters=3, n_iters=15)
         model_gpu.fit(X, initial_centroids)
 
-        # GPU CuPy Bincount
-        model_gpu_bc = KMeansGPUCuPyBincount(n_clusters=3, n_iters=15)
+        # GPU CuPy V2 (Bincount)
+        model_gpu_bc = KMeansGPUCuPyV2(n_clusters=3, n_iters=15)
         model_gpu_bc.fit(X, initial_centroids)
 
         # Сортируем центроиды для сравнения

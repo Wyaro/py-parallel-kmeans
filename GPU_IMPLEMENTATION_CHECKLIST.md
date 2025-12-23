@@ -46,8 +46,8 @@
 
 2. **Тест компиляции kernel**:
    ```python
-   from kmeans.core.gpu_numpy import KMeansGPUCuPyRaw
-   model = KMeansGPUCuPyRaw(n_clusters=8)
+   from kmeans.core.gpu_numpy import KMeansGPUCuPyV4
+   model = KMeansGPUCuPyV4(n_clusters=8)
    # Если ошибка компиляции - будет видно сразу
    ```
 
