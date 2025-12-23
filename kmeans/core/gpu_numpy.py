@@ -60,6 +60,8 @@ class _KMeansGPUBase(KMeansBase):
             raise RuntimeError("CuPy/CUDA недоступен, GPU KMeans выключен")
         super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
         self._gpu_data: _GPUArrays | None = None
+        self.t_h2d: float = 0.0
+        self.t_d2h: float = 0.0
 
     def _to_gpu(self, X: np.ndarray) -> "cp.ndarray":
         return cp.asarray(X, dtype=cp.float64, order="C")
@@ -68,9 +70,11 @@ class _KMeansGPUBase(KMeansBase):
         return cp.asnumpy(arr)
 
     def fit(self, X: np.ndarray, initial_centroids: np.ndarray) -> None:
-        # Один раз переносим на GPU: это основная плата за H2D.
-        X_gpu = self._to_gpu(X)
-        init_gpu = self._to_gpu(initial_centroids)
+        # Один раз переносим на GPU: фиксируем время передачи.
+        with Timer() as t_h2d:
+            X_gpu = self._to_gpu(X)
+            init_gpu = self._to_gpu(initial_centroids)
+        self.t_h2d = float(t_h2d.elapsed)
         self._gpu_data = _GPUArrays(X=X_gpu, centroids=init_gpu)
 
         # Переопределяем fit для GPU массивов с правильной проверкой сходимости
@@ -126,8 +130,10 @@ class _KMeansGPUBase(KMeansBase):
                 break
 
         # Сохраняем копии на CPU для потенциальной пост-обработки/отладки.
-        self.centroids_cpu = self._to_host(self.centroids)
-        self.labels_cpu = self._to_host(self.labels)
+        with Timer() as t_d2h:
+            self.centroids_cpu = self._to_host(self.centroids)
+            self.labels_cpu = self._to_host(self.labels)
+        self.t_d2h = float(t_d2h.elapsed)
 
     # --- Вспомогательное: обработка пустых кластеров оставляем прежней логики ---
     def _merge_centroids(self, new_centroids: "cp.ndarray", non_empty: "cp.ndarray") -> "cp.ndarray":

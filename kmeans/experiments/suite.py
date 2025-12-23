@@ -187,6 +187,10 @@ class ExperimentSuite:
                     "dataset": info,
                     "timing": timing,
                 }
+                # baseline: speedup=1, efficiency=1
+                res["timing"]["speedup"] = 1.0
+                res["timing"]["efficiency"] = 1.0
+                res["timing"]["T_transfer_ratio"] = 0.0
                 results.append(res)
                 self._emit(res)
 
@@ -263,6 +267,9 @@ class ExperimentSuite:
                 results.append(res)
                 self._emit(res)
 
+            # speedup/efficiency и доля передачи для этого датасета
+            self._annotate_speedup_efficiency(results[-len(impls):])
+
         return results
 
     # --- Эксперимент 3: масштабирование по D ---
@@ -331,6 +338,9 @@ class ExperimentSuite:
                 }
                 results.append(res)
                 self._emit(res)
+
+            # speedup/efficiency и доля передачи для этого датасета
+            self._annotate_speedup_efficiency(results[-len(impls):])
 
         return results
 
@@ -401,7 +411,36 @@ class ExperimentSuite:
                 results.append(res)
                 self._emit(res)
 
+            # speedup/efficiency и доля передачи для этого датасета
+            self._annotate_speedup_efficiency(results[-len(impls):])
+
         return results
+
+    def _annotate_speedup_efficiency(self, entries: List[dict]) -> None:
+        """
+        Добавляет speedup/efficiency и долю передачи данных, если есть baseline.
+        baseline = python_cpu_numpy для данного датасета.
+        """
+        baseline = next(
+            (r for r in entries if r.get("implementation") == "python_cpu_numpy"), None
+        )
+        base_t = None
+        if baseline:
+            base_t = baseline.get("timing", {}).get("T_fit_avg")
+
+        for r in entries:
+            timing = r.get("timing", {})
+            t_fit = timing.get("T_fit_avg")
+            if base_t and t_fit and t_fit > 0:
+                speedup = base_t / t_fit
+                p = r.get("threads") or 1
+                efficiency = speedup / p if p else None
+                timing["speedup"] = speedup
+                timing["efficiency"] = efficiency
+            # доля передачи данных (для GPU)
+            t_transfer = timing.get("T_transfer_avg")
+            if t_transfer is not None and t_fit and t_fit > 0:
+                timing["T_transfer_ratio"] = (t_transfer / t_fit) * 100.0
 
     # --- Эксперимент 5: GPU профилирование ---
 
@@ -438,5 +477,13 @@ class ExperimentSuite:
             }
             results.append(res)
             self._emit(res)
+
+        # speedup/efficiency здесь не считаем (baseline отсутствует), но считаем долю передачи
+        for r in results:
+            timing = r.get("timing", {})
+            t_fit = timing.get("T_fit_avg")
+            t_transfer = timing.get("T_transfer_avg")
+            if t_transfer is not None and t_fit and t_fit > 0:
+                timing["T_transfer_ratio"] = (t_transfer / t_fit) * 100.0
 
         return results

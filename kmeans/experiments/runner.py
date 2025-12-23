@@ -84,6 +84,9 @@ class ExperimentRunner:
         update_totals: List[float] = []
         iter_totals: List[float] = []
         runs: List[Dict[str, float]] = []
+        throughput_ops: List[float] = []
+        transfer_totals: List[float] = []
+        transfer_ratios: List[float] = []
 
         estimated = False
         estimated_total_seconds: float | None = None
@@ -115,8 +118,29 @@ class ExperimentRunner:
                     "T_update_total": t_update,
                     "T_iter_total": t_iter,
                     "n_iters_actual": int(model.n_iters_actual),
+                    # Пропускная способность (операции/с) — N*K*D*n_iters_actual / T_fit
+                    "throughput_ops": float(
+                        self.dataset.dataset_info["N"]
+                        * self.dataset.dataset_info["K"]
+                        * self.dataset.dataset_info["D"]
+                        * int(model.n_iters_actual)
+                        / t_fit_val
+                    ),
+                    # Время передачи для GPU (если модель его измерила)
+                    "T_transfer": float(
+                        getattr(model, "t_h2d", 0.0) + getattr(model, "t_d2h", 0.0)
+                    ),
+                    "T_transfer_ratio": float(
+                        ((getattr(model, "t_h2d", 0.0) + getattr(model, "t_d2h", 0.0)) / t_fit_val)
+                        * 100.0
+                        if t_fit_val > 0.0
+                        else 0.0
+                    ),
                 }
             )
+            throughput_ops.append(runs[-1]["throughput_ops"])
+            transfer_totals.append(runs[-1]["T_transfer"])
+            transfer_ratios.append(runs[-1]["T_transfer_ratio"])
 
             if max_seconds is not None and times:
                 avg_time = float(sum(times) / len(times))
@@ -143,6 +167,13 @@ class ExperimentRunner:
             "T_assign_total_avg": float(np.mean(assign_totals)),
             "T_update_total_avg": float(np.mean(update_totals)),
             "T_iter_total_avg": float(np.mean(iter_totals)),
+            # агрегация по дополнительным метрикам
+            "throughput_ops_avg": float(np.mean(throughput_ops)),
+            "throughput_ops_med": float(np.median(throughput_ops)),
+            "T_transfer_avg": float(np.mean(transfer_totals)),
+            "T_transfer_med": float(np.median(transfer_totals)),
+            "T_transfer_ratio_avg": float(np.mean(transfer_ratios)),
+            "T_transfer_ratio_med": float(np.median(transfer_ratios)),
             # подробные метрики по каждому запуску
             "runs": runs,
             # информация об оценке/лимите
