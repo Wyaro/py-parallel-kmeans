@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from multiprocessing import Pool, RawArray, cpu_count
 from typing import List, Optional, Tuple
@@ -13,40 +11,33 @@ from kmeans.core.base import KMeansBase
 
 @dataclass(frozen=True)
 class MultiprocessingConfig:
-    """
-    Конфигурация многопроцессорной реализации.
-
-    n_processes: число процессов (ядёр CPU).
-    chunk_size: размер батча по объектам; если None — N делится равномерно.
-    """
+    """Параметры многопроцессорного KMeans."""
 
     n_processes: int = 4
     chunk_size: Optional[int] = None
 
 
-# --- Глобальное состояние для доступа к разделяемому X в воркерах ---
+# --- Глобальное состояние: shared X в воркерах ---
 _SHARED_X_BUF: RawArray | None = None
 _SHARED_X_SHAPE: Tuple[int, int] | None = None
 
 
 def _init_shared_X(raw: RawArray, shape: Tuple[int, int]) -> None:
-    """Инициализатор пула: настраивает глобальную ссылку на разделяемый X."""
+    """Инициализатор пула: регистрирует shared X."""
     global _SHARED_X_BUF, _SHARED_X_SHAPE
     _SHARED_X_BUF = raw
     _SHARED_X_SHAPE = shape
 
 
 def _get_shared_X() -> np.ndarray:
-    """Возвращает NumPy-представление разделяемого массива X."""
+    """NumPy-представление shared X."""
     assert _SHARED_X_BUF is not None and _SHARED_X_SHAPE is not None
     arr = np.frombuffer(_SHARED_X_BUF, dtype=np.float64)
     return arr.reshape(_SHARED_X_SHAPE)
 
 
 def _assign_chunk_worker(args: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
-    """
-    Шаг назначения (воркер): принимает индексы чанка и центроиды, читает X из shared memory.
-    """
+    """Назначение для чанка: idx + центроиды, чтение X из shared."""
     idx, centroids = args
     X = _get_shared_X()
     X_chunk = X[idx]
@@ -58,10 +49,7 @@ def _assign_chunk_worker(args: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
 def _partial_reduce_worker(
     args: Tuple[np.ndarray, np.ndarray, int, int]
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Частичная редукция по кластеру.
-    Возвращает (sums[K,D], counts[K]) для своего чанка.
-    """
+    """Частичная редукция: возвращает (sums[K,D], counts[K]) для чанка."""
     idx, labels_chunk, K, D = args
     X = _get_shared_X()
     X_chunk = X[idx]
@@ -81,14 +69,7 @@ def _partial_reduce_worker(
 
 
 class KMeansCPUMultiprocessing(KMeansBase):
-    """
-    K-Means на CPU с использованием multiprocessing.Pool.
-
-    - assign_clusters: параллелим по чанкам объектов;
-    - update_centroids: параллельная частичная редукция, затем слияние.
-
-    Пул и shared X создаются один раз на fit и переиспользуются между итерациями.
-    """
+    """K-Means на CPU с multiprocessing и shared X (пул один раз на fit)."""
 
     def __init__(
         self,
@@ -101,12 +82,11 @@ class KMeansCPUMultiprocessing(KMeansBase):
         super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
         self.mp = mp
 
-        # Пул процессов и разбиение на чанки переиспользуются в рамках одного fit,
-        # чтобы не платить оверхед создания Pool на каждую итерацию.
+        # Пул и чанки переиспользуются в рамках fit
         self._pool: Optional[Pool] = None
         self._chunks: Optional[List[np.ndarray]] = None
 
-    # --- Внутренняя инфраструктура пула/чанков ---
+    # --- Пул и разбиение ---
 
     def _make_chunks(self, N: int, n_procs: int) -> List[np.ndarray]:
         """Разбиение индексов на чанки."""
@@ -120,7 +100,7 @@ class KMeansCPUMultiprocessing(KMeansBase):
         return [idx for idx in chunks if idx.size > 0]
 
     def _ensure_pool_and_chunks(self, X: np.ndarray) -> None:
-        """Инициализирует пул процессов, разделяемый X и разбиение индексов, если ещё не сделано."""
+        """Ленивая инициализация пула, shared X и чанков."""
         if self._pool is not None and self._chunks is not None:
             return
 
@@ -129,13 +109,13 @@ class KMeansCPUMultiprocessing(KMeansBase):
 
         self._chunks = self._make_chunks(N, n_procs)
 
-        # создаём разделяемый буфер под X и копируем данные один раз
+        # Копируем X один раз в shared RawArray (float64)
         X_c = np.ascontiguousarray(X, dtype=np.float64)
         raw = RawArray("d", int(X_c.size))
         shared_view = np.frombuffer(raw, dtype=np.float64).reshape(X_c.shape)
         shared_view[:] = X_c
 
-        # создаём пул, который в каждом процессе инициализирует ссылку на shared X
+        # Пул инициализирует ссылку на shared X в каждом процессе
         self._pool = Pool(
             processes=n_procs,
             initializer=_init_shared_X,
@@ -143,7 +123,7 @@ class KMeansCPUMultiprocessing(KMeansBase):
         )
 
     def _close_pool(self) -> None:
-        """Закрывает пул после завершения fit."""
+        """Закрыть пул после fit."""
         if self._pool is not None:
             self._pool.close()
             self._pool.join()
@@ -159,7 +139,7 @@ class KMeansCPUMultiprocessing(KMeansBase):
 
         labels = np.empty(N, dtype=np.int32)
 
-        # формируем список аргументов: (индексы чанка, centroids)
+        # Аргументы воркерам: индексы чанка + центроиды
         args: List[Tuple[np.ndarray, np.ndarray]] = [
             (idx, centroids) for idx in self._chunks
         ]
@@ -201,19 +181,11 @@ class KMeansCPUMultiprocessing(KMeansBase):
 
         return new_centroids
 
-    # Переопределяем fit, чтобы управлять временем жизни пула
-
     def fit(self, X: np.ndarray, initial_centroids: np.ndarray) -> None:
-        """
-        Переопределённый fit:
-        - создаёт пул один раз на весь запуск;
-        - переиспользует его между итерациями;
-        - затем аккуратно закрывает.
-        """
+        """fit с переиспользованием пула и гарантированным закрытием."""
         try:
             super().fit(X, initial_centroids)
         finally:
-            # независимо от исхода fit корректно закрываем пул
             self._close_pool()
 
 

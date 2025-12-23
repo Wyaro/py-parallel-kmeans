@@ -156,7 +156,8 @@ class KMeansGPUCuPy(_KMeansGPUBase):
         K = self.K
         D = X.shape[1]
         sums = cp.zeros((K, D), dtype=cp.float64)
-        counts = cp.zeros(K, dtype=cp.int64)
+        # CuPy scatter_add (add.at) не поддерживает int64, используем int32.
+        counts = cp.zeros(K, dtype=cp.int32)
 
         # add.at — компактная и наглядная редукция
         cp.add.at(sums, labels, X)

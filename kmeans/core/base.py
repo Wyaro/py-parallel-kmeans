@@ -20,7 +20,7 @@ class KMeansBase(ABC):
         self,
         n_clusters: int,
         n_iters: int = 100,
-        tol: float = 1e-7,
+        tol: float = 1e-9,
         logger: Any | None = None,
     ):
         self.K = n_clusters
