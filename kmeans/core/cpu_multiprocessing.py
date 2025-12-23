@@ -94,10 +94,11 @@ class KMeansCPUMultiprocessing(KMeansBase):
         self,
         n_clusters: int,
         n_iters: int = 100,
+        tol: float = 1e-6,
         mp: MultiprocessingConfig = MultiprocessingConfig(),
         logger=None,
     ) -> None:
-        super().__init__(n_clusters=n_clusters, n_iters=n_iters, logger=logger)
+        super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
         self.mp = mp
 
         # Пул процессов и разбиение на чанки переиспользуются в рамках одного fit,

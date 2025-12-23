@@ -114,6 +114,7 @@ class ExperimentRunner:
                     "T_assign_total": t_assign,
                     "T_update_total": t_update,
                     "T_iter_total": t_iter,
+                    "n_iters_actual": int(model.n_iters_actual),
                 }
             )
 
