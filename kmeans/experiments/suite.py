@@ -49,6 +49,107 @@ class ExperimentSuite:
         if self._sink:
             self._sink(result)
 
+    def _calculate_metrics(
+        self,
+        result: dict,
+        baseline_result: dict | None = None,
+    ) -> dict:
+        """
+        Вычисляет дополнительные метрики производительности:
+        - Ускорение (Speedup): S = T_опр / T_мпр
+        - Параллельная эффективность: E = S / p
+        - Пропускная способность: ПС = (N × K × D × N_итер) / T_общ
+        - Время передачи данных (GPU): T_пер = T_H2D + T_D2H
+        - Доля времени на передачу данных (GPU): R_пер = T_пер / T_общ × 100%
+
+        :param result: результат эксперимента для многопоточной реализации
+        :param baseline_result: результат эксперимента для однопоточной реализации (baseline)
+        :return: словарь с дополнительными метриками
+        """
+        timing = result.get("timing", {})
+        dataset = result.get("dataset", {})
+        impl_name = result.get("implementation", "")
+        
+        N = dataset.get("N", 0)
+        K = dataset.get("K", 0)
+        D = dataset.get("D", 0)
+        
+        T_общ = timing.get("T_fit_avg", 0.0)
+        
+        metrics = {}
+        
+        # 1. Ускорение (Speedup): S = T_опр / T_мпр
+        if baseline_result is not None:
+            baseline_timing = baseline_result.get("timing", {})
+            T_опр = baseline_timing.get("T_fit_avg", 0.0)
+            if T_общ > 0 and T_опр > 0:
+                speedup = T_опр / T_общ
+                metrics["speedup"] = float(speedup)
+            else:
+                metrics["speedup"] = None
+        else:
+            metrics["speedup"] = None
+        
+        # 2. Параллельная эффективность: E = S / p
+        # p - число потоков (CPU) или количество блоков (GPU)
+        p = None
+        
+        # Для CPU multiprocessing
+        if "threads" in result:
+            p = result["threads"]
+        # Для GPU - вычисляем количество блоков
+        elif impl_name.startswith("python_gpu_cupy"):
+            # Для GPU вычисляем количество блоков на основе N
+            # threads_per_block = 256 (стандартное значение)
+            threads_per_block = 256
+            if N > 0:
+                blocks = (N + threads_per_block - 1) // threads_per_block
+                p = blocks
+                metrics["gpu_blocks"] = blocks
+                metrics["gpu_threads_per_block"] = threads_per_block
+        
+        if metrics.get("speedup") is not None and p is not None and p > 0:
+            efficiency = metrics["speedup"] / p
+            metrics["efficiency"] = float(efficiency)
+        else:
+            metrics["efficiency"] = None
+        
+        if p is not None:
+            metrics["parallelism_factor"] = p
+        
+        # 3. Пропускная способность: ПС = (N × K × D × N_итер) / T_общ
+        # Используем среднее количество итераций из runs
+        runs = timing.get("runs", [])
+        if runs:
+            n_iters_actual_list = [r.get("n_iters_actual", 0) for r in runs]
+            n_iters_avg = sum(n_iters_actual_list) / len(n_iters_actual_list) if n_iters_actual_list else 0
+        else:
+            n_iters_avg = 0
+        
+        if T_общ > 0 and N > 0 and K > 0 and D > 0 and n_iters_avg > 0:
+            throughput = (N * K * D * n_iters_avg) / T_общ
+            metrics["throughput"] = float(throughput)
+        else:
+            metrics["throughput"] = None
+        
+        # 4. Время передачи данных (GPU): T_пер = T_H2D + T_D2H
+        # Уже вычисляется в runner.py как T_transfer
+        T_transfer = timing.get("T_transfer_avg", None)
+        if T_transfer is not None:
+            metrics["T_transfer"] = float(T_transfer)
+        else:
+            metrics["T_transfer"] = None
+        
+        # 5. Доля времени на передачу данных (GPU): R_пер = T_пер / T_общ × 100%
+        # Уже вычисляется в runner.py как T_transfer_ratio
+        T_transfer_ratio = timing.get("T_transfer_ratio_avg", None)
+        if T_transfer_ratio is not None:
+            metrics["T_transfer_ratio"] = float(T_transfer_ratio)
+        else:
+            metrics["T_transfer_ratio"] = None
+        
+        return metrics
+
     def _gpu_variants(self) -> list[tuple[str, Callable[..., Any]]]:
         if not self._gpu_ok:
             return []
@@ -304,6 +405,9 @@ class ExperimentSuite:
                     "dataset": info,
                     "timing": timing_mp,
                 }
+                # Вычисляем метрики производительности относительно однопоточной реализации
+                metrics = self._calculate_metrics(res_mp, baseline_result=res_single)
+                res_mp["metrics"] = metrics
                 results.append(res_mp)
                 self._emit(res_mp)
 
@@ -320,6 +424,11 @@ class ExperimentSuite:
                     "dataset": info,
                     "timing": timing_gpu,
                 }
+                # Вычисляем метрики производительности относительно однопоточной реализации
+                # Если gpu_only, baseline_result будет None, и метрики не будут вычислены
+                baseline_for_gpu = res_single if not self.gpu_only else None
+                metrics = self._calculate_metrics(res_gpu, baseline_result=baseline_for_gpu)
+                res_gpu["metrics"] = metrics
                 results.append(res_gpu)
                 self._emit(res_gpu)
 
@@ -346,18 +455,19 @@ class ExperimentSuite:
             dataset = self.dataset_cls(self.registry.datasets_root, info)
             
             # CPU реализация - пропускаем если gpu_only
+            res_single = None
             if not self.gpu_only:
                 runner = self.runner_cls(dataset, self.model_factory, self.logger)
                 timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-                res = {
+                res_single = {
                     "experiment": cfg.id.value,
                     "implementation": "python_cpu_numpy",
                     "dataset": info,
                     "timing": timing,
                 }
-                results.append(res)
-                self._emit(res)
+                results.append(res_single)
+                self._emit(res_single)
 
             # GPU реализации
             for impl_name, factory in self._gpu_variants():
@@ -372,6 +482,9 @@ class ExperimentSuite:
                     "dataset": info,
                     "timing": timing_gpu,
                 }
+                # Вычисляем метрики производительности относительно однопоточной реализации
+                metrics = self._calculate_metrics(res_gpu, baseline_result=res_single)
+                res_gpu["metrics"] = metrics
                 results.append(res_gpu)
                 self._emit(res_gpu)
 
@@ -398,18 +511,19 @@ class ExperimentSuite:
             dataset = self.dataset_cls(self.registry.datasets_root, info)
             
             # CPU реализация - пропускаем если gpu_only
+            res_single = None
             if not self.gpu_only:
                 runner = self.runner_cls(dataset, self.model_factory, self.logger)
                 timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-                res = {
+                res_single = {
                     "experiment": cfg.id.value,
                     "implementation": "python_cpu_numpy",
                     "dataset": info,
                     "timing": timing,
                 }
-                results.append(res)
-                self._emit(res)
+                results.append(res_single)
+                self._emit(res_single)
 
             # GPU реализации
             for impl_name, factory in self._gpu_variants():
@@ -424,6 +538,9 @@ class ExperimentSuite:
                     "dataset": info,
                     "timing": timing_gpu,
                 }
+                # Вычисляем метрики производительности относительно однопоточной реализации
+                metrics = self._calculate_metrics(res_gpu, baseline_result=res_single)
+                res_gpu["metrics"] = metrics
                 results.append(res_gpu)
                 self._emit(res_gpu)
 
@@ -466,6 +583,32 @@ class ExperimentSuite:
 
         max_procs = cpu_count()
 
+        # Baseline: однопоточная реализация для расчета метрик
+        res_baseline = None
+        if not self.gpu_only:
+            from kmeans.core.cpu_numpy import KMeansCPUNumpy
+            
+            self.logger.info(f"[strong_scaling] Running baseline (python_cpu_numpy)")
+            
+            def baseline_model_factory(*, n_clusters: int, logger=None) -> Any:
+                return KMeansCPUNumpy(
+                    n_clusters=n_clusters,
+                    n_iters=100,
+                    logger=logger,
+                )
+            
+            runner_baseline = self.runner_cls(dataset, baseline_model_factory, self.logger)
+            timing_baseline = runner_baseline.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
+            
+            res_baseline = {
+                "experiment": cfg.id.value,
+                "implementation": "python_cpu_numpy",
+                "dataset": info,
+                "timing": timing_baseline,
+            }
+            results.append(res_baseline)
+            self._emit(res_baseline)
+
         # CPU multiprocessing реализации - пропускаем если gpu_only
         if not self.gpu_only:
             for n_procs in threads_list:
@@ -493,6 +636,9 @@ class ExperimentSuite:
                     "dataset": info,
                     "timing": timing,
                 }
+                # Вычисляем метрики производительности относительно однопоточной реализации
+                metrics = self._calculate_metrics(res, baseline_result=res_baseline)
+                res["metrics"] = metrics
                 results.append(res)
                 self._emit(res)
 
@@ -507,6 +653,9 @@ class ExperimentSuite:
                 "dataset": info,
                 "timing": timing_gpu,
             }
+            # Вычисляем метрики производительности относительно однопоточной реализации
+            metrics = self._calculate_metrics(res_gpu, baseline_result=res_baseline)
+            res_gpu["metrics"] = metrics
             results.append(res_gpu)
             self._emit(res_gpu)
 

@@ -104,7 +104,7 @@ O(N × K × D)
 Создание синтетических датасетов с различными параметрами для экспериментов:
 
 ```python
-from generate_datasets import DatasetGenerator
+from scripts.generate_datasets import DatasetGenerator
 
 generator = DatasetGenerator(base_seed=42)
 generator.generate_all()  # Генерирует все типы датасетов
@@ -133,7 +133,7 @@ python -m kmeans.main --experiment exp2_scaling_n --gpu-only
 Статистический анализ времени выполнения:
 
 ```python
-from analyze_timings import compute_stats_from_results
+from scripts.analyze_timings import compute_stats_from_results
 
 compute_stats_from_results("kmeans_timing_results.json", output_path="timings_report.txt")
 ```
@@ -274,7 +274,7 @@ pip install cupy-cuda11x
 
 **Примечание**: Если у вас установлено несколько версий CuPy, это может вызвать конфликты. Перед установкой новой версии удалите все существующие:
 
-```bash
+     ```bash
 pip uninstall -y cupy cupy-cuda11x cupy-cuda12x cupy-cuda13x
 pip install cupy-cuda12x  # или нужная вам версия
 ```
@@ -302,9 +302,9 @@ pip install cupy-cuda12x  # или нужная вам версия
 6. Нажмите **"OK"**
 7. В терминале PyCharm выполните:
 
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 ### Проверка установки
 
@@ -554,9 +554,9 @@ python -m kmeans.main --experiment exp5_gpu_profile
 ### Шаг 3: Анализ результатов
 
 ```bash
-python analyze_timings.py
+python scripts/analyze_timings.py
 # Или программно:
-python -c "from analyze_timings import compute_stats_from_results; compute_stats_from_results('kmeans_timing_results.json', output_path='timings_report.txt')"
+python -c "from scripts.analyze_timings import compute_stats_from_results; compute_stats_from_results('kmeans_timing_results.json', output_path='timings_report.txt')"
 ```
 
 ---
@@ -966,7 +966,7 @@ model.fit(X, initial_centroids)
 Модуль `analyze_timings.py` предоставляет инструменты для анализа результатов:
 
 ```python
-from analyze_timings import compute_stats_from_results, TimingResultsAnalyzer
+from scripts.analyze_timings import compute_stats_from_results, TimingResultsAnalyzer
 
 # Простой анализ с сохранением в файл
 compute_stats_from_results(
@@ -993,9 +993,12 @@ analyzer.analyze(output_path="timings_report.txt")
 ```
 parallel/
 ├── main.py                      # Основной скрипт подготовки данных
-├── generate_datasets.py          # Генератор синтетических датасетов
-├── vizualize_datasets.py        # Визуализация датасетов
-├── analyze_timings.py           # Анализ результатов экспериментов
+├── scripts/                     # Утилиты и скрипты
+│   ├── generate_datasets.py     # Генератор синтетических датасетов
+│   ├── vizualize_datasets.py    # Визуализация датасетов
+│   ├── analyze_timings.py       # Анализ результатов экспериментов
+│   ├── analyze_gpu_results.py   # Анализ GPU реализаций
+│   └── calculate_metrics_from_summary.py  # Расчет метрик производительности
 │
 ├── datasets/                     # Сгенерированные датасеты
 │   ├── base/                    # Базовые датасеты

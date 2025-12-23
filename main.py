@@ -9,9 +9,9 @@
 
 from pathlib import Path
 
-from analyze_timings import compute_stats_from_results
-from generate_datasets import DatasetGenerator
-from vizualize_datasets import visualize_all_datasets
+from scripts.analyze_timings import compute_stats_from_results
+from scripts.generate_datasets import DatasetGenerator
+from scripts.vizualize_datasets import visualize_all_datasets
 
 
 def main() -> None:
