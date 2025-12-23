@@ -46,6 +46,11 @@ def main() -> None:
         action="store_true",
         help="Запускать только GPU реализации (пропустить CPU алгоритмы).",
     )
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help="Автоматически запустить анализ результатов после завершения экспериментов.",
+    )
     args = parser.parse_args()
 
     logger = setup_logger()
@@ -136,6 +141,44 @@ def main() -> None:
 
     logger.info(f"Finished {len(results)} experiments for '{args.experiment}'")
     logger.info(f"Timing results saved to {RESULTS_JSON}")
+    
+    # Автоматический запуск аналитики, если запрошено
+    if args.analyze:
+        logger.info("Starting automatic analysis of results...")
+        try:
+            # Импортируем функции анализа напрямую из scripts
+            from scripts.analyze_timings import compute_stats_from_results
+            from scripts.calculate_metrics_from_summary import (
+                calculate_metrics,
+                format_metrics_output,
+                parse_summary_file,
+            )
+            
+            # Шаг 1: Анализ таймингов
+            analysis_output = ROOT / "analysis_summary.txt"
+            compute_stats_from_results(
+                RESULTS_JSON,
+                n_iters=100,
+                output_path=analysis_output,
+            )
+            logger.info(f"Timing analysis saved to {analysis_output}")
+            
+            # Шаг 2: Расчет метрик (если есть analysis_summary.txt)
+            if analysis_output.exists():
+                metrics_output = ROOT / "metrics_summary.txt"
+                results = parse_summary_file(str(analysis_output))
+                metrics_results = calculate_metrics(results)
+                output = format_metrics_output(metrics_results)
+                
+                with open(metrics_output, 'w', encoding='utf-8') as f:
+                    f.write(output)
+                
+                logger.info(f"Metrics analysis saved to {metrics_output}")
+            
+            logger.info("Analysis completed successfully")
+        except Exception as e:
+            logger.error(f"Failed to run analysis: {e}")
+            logger.info("You can run analysis manually with: python main.py --analysis-only")
 
 
 if __name__ == "__main__":
