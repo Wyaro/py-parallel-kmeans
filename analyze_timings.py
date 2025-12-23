@@ -88,20 +88,47 @@ class TimingResultsAnalyzer:
         """
         # Преобразуем время из секунд в миллисекунды
         # Для T_assign, T_update, T_iter — это время всех итераций,
-        # поэтому делим на n_iters для получения времени одной итерации
-        t_assign_ms = [
-            float(r["T_assign_total"]) * 1000.0 / float(self.n_iters)
-            for r in runs
-        ]
-        t_update_ms = [
-            float(r["T_update_total"]) * 1000.0 / float(self.n_iters)
-            for r in runs
-        ]
-        t_iter_ms = [
-            float(r["T_iter_total"]) * 1000.0 / float(self.n_iters) for r in runs
-        ]
-        # T_fit — это общее время одного запуска алгоритма
-        t_total_ms = [float(r["T_fit"]) * 1000.0 for r in runs]
+        # поэтому делим на реальное количество итераций (n_iters_actual) для получения времени одной итерации
+        t_assign_ms = []
+        t_update_ms = []
+        t_iter_ms = []
+        t_total_ms = []
+        
+        for r in runs:
+            # Используем реальное количество итераций из прогона, если доступно
+            # Иначе используем значение по умолчанию из конструктора
+            n_iters_actual = r.get("n_iters_actual")
+            if n_iters_actual is None or n_iters_actual <= 0:
+                n_iters_actual = self.n_iters
+            
+            n_iters_actual = float(n_iters_actual)
+            
+            # Время одной итерации (в миллисекундах)
+            if n_iters_actual > 0:
+                t_assign_ms.append(float(r["T_assign_total"]) * 1000.0 / n_iters_actual)
+                t_update_ms.append(float(r["T_update_total"]) * 1000.0 / n_iters_actual)
+                t_iter_ms.append(float(r["T_iter_total"]) * 1000.0 / n_iters_actual)
+            else:
+                # Если итераций не было, используем 0
+                t_assign_ms.append(0.0)
+                t_update_ms.append(0.0)
+                t_iter_ms.append(0.0)
+            
+            # T_fit — это общее время одного запуска алгоритма (в миллисекундах)
+            t_total_ms.append(float(r["T_fit"]) * 1000.0)
+
+        if not t_assign_ms:
+            # Если нет данных, возвращаем нули
+            return {
+                "assign_mean": 0.0,
+                "assign_med": 0.0,
+                "update_mean": 0.0,
+                "update_med": 0.0,
+                "iter_mean": 0.0,
+                "iter_med": 0.0,
+                "total_mean": 0.0,
+                "total_med": 0.0,
+            }
 
         return {
             "assign_mean": mean(t_assign_ms),
@@ -137,6 +164,14 @@ class TimingResultsAnalyzer:
                 continue
 
             stats = self._compute_statistics(runs)
+            
+            # Вычисляем среднее количество итераций
+            n_iters_list = [
+                float(r.get("n_iters_actual", self.n_iters))
+                for r in runs
+                if r.get("n_iters_actual") is not None
+            ]
+            avg_n_iters = mean(n_iters_list) if n_iters_list else self.n_iters
 
             print(f"Эксперимент: {exp}, реализация: {impl}")
             print(
@@ -144,6 +179,7 @@ class TimingResultsAnalyzer:
                 f"D={dataset_info.get('D')}, "
                 f"K={dataset_info.get('K')}"
             )
+            print(f"  Среднее количество итераций: {avg_n_iters:.1f}")
             print(
                 f"  Tназначения (одна итерация): "
                 f"ср={stats['assign_mean']:.3f} мс, "
@@ -172,6 +208,7 @@ class TimingResultsAnalyzer:
                     f"  Датасет: N={dataset_info.get('N')}, "
                     f"D={dataset_info.get('D')}, "
                     f"K={dataset_info.get('K')}",
+                    f"  Среднее количество итераций: {avg_n_iters:.1f}",
                     f"  Tназначения (одна итерация): "
                     f"ср={stats['assign_mean']:.3f} мс, "
                     f"мед={stats['assign_med']:.3f} мс",

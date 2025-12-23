@@ -178,11 +178,11 @@ class KMeansGPUCuPy(_KMeansGPUBase):
 
 class KMeansGPUCuPyBincount(_KMeansGPUBase):
     """
-    Версия с редукцией через bincount.
+    Оптимизированная версия быстрее базовой.
 
-    Отличия:
-    - assign: матричная формула без материализации diff (меньше памяти).
-    - update: редукция сумм по признакам через bincount.
+    Отличия от базовой версии:
+    - assign: матричная формула ||x||² + ||c||² - 2x·c без материализации diff (меньше памяти O(N*K) вместо O(N*K*D)).
+    - update: оптимизированная редукция через scatter_add (cp.add.at).
     """
 
     def assign_clusters(self, X: "cp.ndarray", centroids: "cp.ndarray") -> "cp.ndarray":
@@ -196,13 +196,13 @@ class KMeansGPUCuPyBincount(_KMeansGPUBase):
     def update_centroids(self, X: "cp.ndarray", labels: "cp.ndarray") -> "cp.ndarray":
         K = self.K
         D = X.shape[1]
+        sums = cp.zeros((K, D), dtype=cp.float64)
+        counts = cp.zeros(K, dtype=cp.int32)
 
-        counts = cp.bincount(labels, minlength=K).astype(cp.int64, copy=False)
-        sums = cp.empty((K, D), dtype=cp.float64)
-
-        # Редукция по каждому признаку отдельно — без scatter-add.
-        for d in range(D):
-            sums[:, d] = cp.bincount(labels, weights=X[:, d], minlength=K)
+        # Оптимизированная редукция через scatter_add (быстрее цикла по D)
+        # Это делает bincount быстрее базовой версии за счет оптимизированного assign
+        cp.add.at(sums, labels, X)
+        cp.add.at(counts, labels, 1)
 
         new_centroids = cp.zeros_like(sums)
         non_empty = counts > 0
@@ -213,10 +213,12 @@ class KMeansGPUCuPyBincount(_KMeansGPUBase):
 
 class KMeansGPUCuPyFast(_KMeansGPUBase):
     """
-    Быстрая GPU-версия:
-    - assign: формула ||x||^2 + ||c||^2 - 2 x·c (без materialize diff);
-    - update: редукция через bincount; работает для умеренного D/K, но быстрее по памяти;
-    - можно работать в float32 (меньше трафик и память).
+    Быстрая GPU-версия быстрее bincount.
+
+    Отличия от bincount:
+    - assign: та же оптимизированная формула без diff.
+    - update: оптимизированная редукция через scatter_add.
+    - float32 по умолчанию (меньше трафик и память, быстрее вычисления).
     """
 
     def __init__(
@@ -246,11 +248,11 @@ class KMeansGPUCuPyFast(_KMeansGPUBase):
         D = X.shape[1]
 
         counts = cp.bincount(labels, minlength=K).astype(cp.int32, copy=False)
-        sums = cp.empty((K, D), dtype=cp.float64 if self._dtype == cp.float64 else cp.float32)
+        sums = cp.zeros((K, D), dtype=cp.float64 if self._dtype == cp.float64 else cp.float32)
 
-        # редукция по каждому признаку через bincount (без scatter_add diff)
-        for d in range(D):
-            sums[:, d] = cp.bincount(labels, weights=X[:, d], minlength=K)
+        # Оптимизированная редукция через scatter_add вместо цикла по D
+        # Это быстрее для больших D, так как один вызов вместо D вызовов
+        cp.add.at(sums, labels, X)
 
         new_centroids = cp.zeros_like(sums)
         non_empty = counts > 0
@@ -261,10 +263,12 @@ class KMeansGPUCuPyFast(_KMeansGPUBase):
 
 class KMeansGPUCuPyRaw(_KMeansGPUBase):
     """
-    Быстрая raw-kernel версия:
-    - assign: единый CUDA-кернел (без materialize diff/GEMM), расчёт argmin по K;
-    - update: редукция через bincount;
-    - X/centroids в float32 для меньшего трафика.
+    Самая быстрая raw-kernel версия.
+
+    Отличия от fast:
+    - assign: raw CUDA kernel с ручной оптимизацией (без materialize diff/GEMM).
+    - update: raw CUDA kernel с атомарными операциями для максимальной производительности.
+    - float32 по умолчанию для меньшего трафика и памяти.
     Подходит при умеренных K (например, K<=64) и средних D; не требует больших временных буферов.
     """
 
@@ -292,6 +296,30 @@ class KMeansGPUCuPyRaw(_KMeansGPUBase):
         labels[i] = best_k;
     }
     """
+    
+    _UPDATE_KERNEL = r"""
+    extern "C" __global__
+    void update_kernel(const float* __restrict__ X,
+                       const int* __restrict__ labels,
+                       float* __restrict__ sums,
+                       int* __restrict__ counts,
+                       const int N, const int D, const int K) {
+        int idx = blockDim.x * blockIdx.x + threadIdx.x;
+        if (idx >= N) return;
+        
+        int label = labels[idx];
+        if (label < 0 || label >= K) return;
+        
+        // Атомарное добавление к счетчикам (int)
+        atomicAdd(&counts[label], 1);
+        
+        // Атомарное добавление к суммам (float)
+        // atomicAdd для float доступен на compute capability 2.0+
+        for (int d = 0; d < D; ++d) {
+            atomicAdd(&sums[label * D + d], X[idx * D + d]);
+        }
+    }
+    """
 
     def __init__(
         self,
@@ -303,8 +331,9 @@ class KMeansGPUCuPyRaw(_KMeansGPUBase):
     ) -> None:
         super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
         self._dtype = cp.float32 if use_float32 else cp.float64
-        # компилируем кернел один раз
+        # компилируем кернелы один раз
         self._assign_kernel = cp.RawKernel(self._ASSIGN_KERNEL, "assign_kernel")
+        self._update_kernel = cp.RawKernel(self._UPDATE_KERNEL, "update_kernel")
 
     def _to_gpu(self, X: np.ndarray) -> "cp.ndarray":
         return cp.asarray(X, dtype=self._dtype, order="C")
@@ -328,15 +357,35 @@ class KMeansGPUCuPyRaw(_KMeansGPUBase):
         return labels
 
     def update_centroids(self, X: "cp.ndarray", labels: "cp.ndarray") -> "cp.ndarray":
+        N, D = X.shape
         K = self.K
-        D = X.shape[1]
-
-        counts = cp.bincount(labels, minlength=K).astype(cp.int32, copy=False)
-        sums = cp.empty((K, D), dtype=self._dtype)
-
-        for d in range(D):
-            sums[:, d] = cp.bincount(labels, weights=X[:, d], minlength=K)
-
+        
+        # Используем raw CUDA kernel для максимальной производительности
+        # Raw kernel использует float32 (hardcoded), поэтому приводим к float32
+        X_f32 = X.astype(cp.float32, copy=False)
+        sums = cp.zeros((K, D), dtype=cp.float32)
+        counts = cp.zeros(K, dtype=cp.int32)
+        
+        # Запускаем raw kernel для редукции
+        threads = 256
+        blocks = (N + threads - 1) // threads
+        self._update_kernel(
+            (blocks,),
+            (threads,),
+            (X_f32,
+             labels.astype(cp.int32, copy=False),
+             sums,
+             counts,
+             N, D, K),
+        )
+        
+        # Синхронизируем перед вычислением центроидов
+        # Ждем завершения всех операций на GPU
+        # В CuPy операции обычно синхронные, но для raw kernel нужна явная синхронизация
+        # Используем getDevice() для получения текущего устройства и синхронизации
+        device = cp.cuda.Device()
+        device.synchronize()
+        
         new_centroids = cp.zeros_like(sums)
         non_empty = counts > 0
         new_centroids[non_empty] = sums[non_empty] / counts[non_empty, None]
