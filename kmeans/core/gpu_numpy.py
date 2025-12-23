@@ -203,3 +203,136 @@ class KMeansGPUCuPyBincount(_KMeansGPUBase):
         new_centroids[non_empty] = sums[non_empty] / counts[non_empty, None]
 
         return self._merge_centroids(new_centroids, non_empty)
+
+
+class KMeansGPUCuPyFast(_KMeansGPUBase):
+    """
+    Быстрая GPU-версия:
+    - assign: формула ||x||^2 + ||c||^2 - 2 x·c (без materialize diff);
+    - update: редукция через bincount; работает для умеренного D/K, но быстрее по памяти;
+    - можно работать в float32 (меньше трафик и память).
+    """
+
+    def __init__(
+        self,
+        n_clusters: int,
+        n_iters: int = 100,
+        tol: float = 1e-6,
+        use_float32: bool = True,
+        logger: Any | None = None,
+    ) -> None:
+        super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
+        self._dtype = cp.float32 if use_float32 else cp.float64
+
+    def _to_gpu(self, X: np.ndarray) -> "cp.ndarray":
+        return cp.asarray(X, dtype=self._dtype, order="C")
+
+    def assign_clusters(self, X: "cp.ndarray", centroids: "cp.ndarray") -> "cp.ndarray":
+        # ||x - c||^2 = ||x||^2 + ||c||^2 - 2 x·c
+        x_sq = cp.sum(X * X, axis=1, keepdims=True)            # (N, 1)
+        c_sq = cp.sum(centroids * centroids, axis=1)           # (K,)
+        cross = X @ centroids.T                                # (N, K)
+        distances = x_sq + c_sq[None, :] - 2.0 * cross
+        return cp.argmin(distances, axis=1).astype(cp.int32, copy=False)
+
+    def update_centroids(self, X: "cp.ndarray", labels: "cp.ndarray") -> "cp.ndarray":
+        K = self.K
+        D = X.shape[1]
+
+        counts = cp.bincount(labels, minlength=K).astype(cp.int32, copy=False)
+        sums = cp.empty((K, D), dtype=cp.float64 if self._dtype == cp.float64 else cp.float32)
+
+        # редукция по каждому признаку через bincount (без scatter_add diff)
+        for d in range(D):
+            sums[:, d] = cp.bincount(labels, weights=X[:, d], minlength=K)
+
+        new_centroids = cp.zeros_like(sums)
+        non_empty = counts > 0
+        new_centroids[non_empty] = sums[non_empty] / counts[non_empty, None]
+
+        return self._merge_centroids(new_centroids, non_empty)
+
+
+class KMeansGPUCuPyRaw(_KMeansGPUBase):
+    """
+    Быстрая raw-kernel версия:
+    - assign: единый CUDA-кернел (без materialize diff/GEMM), расчёт argmin по K;
+    - update: редукция через bincount;
+    - X/centroids в float32 для меньшего трафика.
+    Подходит при умеренных K (например, K<=64) и средних D; не требует больших временных буферов.
+    """
+
+    _ASSIGN_KERNEL = r"""
+    extern "C" __global__
+    void assign_kernel(const float* __restrict__ X,
+                       const float* __restrict__ C,
+                       int* __restrict__ labels,
+                       const int N, const int D, const int K) {
+        int i = blockDim.x * blockIdx.x + threadIdx.x;
+        if (i >= N) return;
+        const float* x = X + i * D;
+        float best = 1e30f;
+        int best_k = 0;
+        for (int k = 0; k < K; ++k) {
+            const float* c = C + k * D;
+            float dist = 0.0f;
+            #pragma unroll 4
+            for (int d = 0; d < D; ++d) {
+                float diff = x[d] - c[d];
+                dist += diff * diff;
+            }
+            if (dist < best) { best = dist; best_k = k; }
+        }
+        labels[i] = best_k;
+    }
+    """
+
+    def __init__(
+        self,
+        n_clusters: int,
+        n_iters: int = 100,
+        tol: float = 1e-6,
+        use_float32: bool = True,
+        logger: Any | None = None,
+    ) -> None:
+        super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
+        self._dtype = cp.float32 if use_float32 else cp.float64
+        # компилируем кернел один раз
+        self._assign_kernel = cp.RawKernel(self._ASSIGN_KERNEL, "assign_kernel")
+
+    def _to_gpu(self, X: np.ndarray) -> "cp.ndarray":
+        return cp.asarray(X, dtype=self._dtype, order="C")
+
+    def assign_clusters(self, X: "cp.ndarray", centroids: "cp.ndarray") -> "cp.ndarray":
+        N, D = X.shape
+        K = self.K
+        labels = cp.empty(N, dtype=cp.int32)
+
+        # запускаем один кернел для всего набора
+        threads = 256
+        blocks = (N + threads - 1) // threads
+        self._assign_kernel(
+            (blocks,),
+            (threads,),
+            (X.astype(cp.float32, copy=False),  # гарантируем float32 для ядра
+             centroids.astype(cp.float32, copy=False),
+             labels,
+             N, D, K),
+        )
+        return labels
+
+    def update_centroids(self, X: "cp.ndarray", labels: "cp.ndarray") -> "cp.ndarray":
+        K = self.K
+        D = X.shape[1]
+
+        counts = cp.bincount(labels, minlength=K).astype(cp.int32, copy=False)
+        sums = cp.empty((K, D), dtype=self._dtype)
+
+        for d in range(D):
+            sums[:, d] = cp.bincount(labels, weights=X[:, d], minlength=K)
+
+        new_centroids = cp.zeros_like(sums)
+        non_empty = counts > 0
+        new_centroids[non_empty] = sums[non_empty] / counts[non_empty, None]
+
+        return self._merge_centroids(new_centroids, non_empty)
