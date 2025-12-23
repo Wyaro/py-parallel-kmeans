@@ -34,6 +34,13 @@ def main() -> None:
         "(all, exp1_baseline_single, exp2_scaling_n, "
         "exp3_scaling_d, exp4_scaling_k, exp5_strong_scaling, exp6_gpu_profile)",
     )
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=1800.0,
+        help="Лимит времени (в секундах) на warmup+замеры; "
+        "при прогнозе превышения делаем ранний выход с оценкой.",
+    )
     args = parser.parse_args()
 
     logger = setup_logger()
@@ -41,6 +48,14 @@ def main() -> None:
         summary_path=SUMMARY,
         datasets_root=DATASETS,
     )
+
+    # Потоковая запись результатов в NDJSON, чтобы не ждать окончания всех запусков.
+    # Перед стартом очищаем файл.
+    RESULTS_JSON.write_text("", encoding="utf-8")
+    def sink_writer(rec: dict) -> None:
+        with open(RESULTS_JSON, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False))
+            f.write("\n")
 
     def make_suite_single() -> ExperimentSuite:
         return ExperimentSuite(
@@ -52,6 +67,8 @@ def main() -> None:
             dataset_cls=Dataset,
             runner_cls=ExperimentRunner,
             logger=logger,
+            max_seconds=args.max_seconds,
+            result_sink=sink_writer,
         )
 
     def make_suite_mp(n_procs: int) -> ExperimentSuite:
@@ -65,6 +82,8 @@ def main() -> None:
             dataset_cls=Dataset,
             runner_cls=ExperimentRunner,
             logger=logger,
+            max_seconds=args.max_seconds,
+            result_sink=sink_writer,
         )
 
     max_procs = cpu_count()
@@ -91,11 +110,17 @@ def main() -> None:
         # strong scaling по числу процессов для Python multiprocessing
         suite = make_suite_single()  # модель задаётся внутри run_exp5_strong_scaling
         results = suite.run_exp5_strong_scaling()
+    elif args.experiment == ExperimentId.GPU_PROFILE.value:
+        suite = make_suite_single()  # dataset_cls/runner_cls те же
+        results = suite.run_exp6_gpu_profile()
     else:
         raise ValueError(f"Experiment {args.experiment} is not implemented in Python runner.")
 
+    # Пишем результаты потоково в NDJSON, чтобы не ждать окончания всех экспериментов.
     with open(RESULTS_JSON, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+        for r in results:
+            f.write(json.dumps(r, ensure_ascii=False))
+            f.write("\n")
 
     logger.info(f"Finished {len(results)} experiments for '{args.experiment}'")
     logger.info(f"Timing results saved to {RESULTS_JSON}")

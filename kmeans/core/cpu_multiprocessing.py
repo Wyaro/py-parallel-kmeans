@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from multiprocessing import Pool, RawArray, cpu_count
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -14,8 +16,8 @@ class MultiprocessingConfig:
     """
     Конфигурация многопроцессорной реализации.
 
-    n_processes: желаемое число процессов (ядёр CPU).
-    chunk_size: размер батча по объектам; если None — N делится равномерно по процессам.
+    n_processes: число процессов (ядёр CPU).
+    chunk_size: размер батча по объектам; если None — N делится равномерно.
     """
 
     n_processes: int = 4
@@ -23,7 +25,6 @@ class MultiprocessingConfig:
 
 
 # --- Глобальное состояние для доступа к разделяемому X в воркерах ---
-
 _SHARED_X_BUF: RawArray | None = None
 _SHARED_X_SHAPE: Tuple[int, int] | None = None
 
@@ -44,8 +45,7 @@ def _get_shared_X() -> np.ndarray:
 
 def _assign_chunk_worker(args: Tuple[np.ndarray, np.ndarray]) -> np.ndarray:
     """
-    Рабочая функция для шага назначения (используется в пуле процессов).
-    Получает индексы чанка и центроиды, берёт X из разделяемой памяти.
+    Шаг назначения (воркер): принимает индексы чанка и центроиды, читает X из shared memory.
     """
     idx, centroids = args
     X = _get_shared_X()
@@ -59,7 +59,7 @@ def _partial_reduce_worker(
     args: Tuple[np.ndarray, np.ndarray, int, int]
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Рабочая функция для частичной редукции по кластеру.
+    Частичная редукция по кластеру.
     Возвращает (sums[K,D], counts[K]) для своего чанка.
     """
     idx, labels_chunk, K, D = args
@@ -87,9 +87,7 @@ class KMeansCPUMultiprocessing(KMeansBase):
     - assign_clusters: параллелим по чанкам объектов;
     - update_centroids: параллельная частичная редукция, затем слияние.
 
-    Важно: для реальных бенчмарков лучше было бы переиспользовать пул между
-    итерациями fit, но для простоты здесь пул создаётся на каждый вызов
-    assign/update. Архитектура класса позволяет доработать это позже.
+    Пул и shared X создаются один раз на fit и переиспользуются между итерациями.
     """
 
     def __init__(
@@ -109,6 +107,17 @@ class KMeansCPUMultiprocessing(KMeansBase):
 
     # --- Внутренняя инфраструктура пула/чанков ---
 
+    def _make_chunks(self, N: int, n_procs: int) -> List[np.ndarray]:
+        """Разбиение индексов на чанки."""
+        if self.mp.chunk_size is None:
+            chunks = np.array_split(np.arange(N), n_procs)
+        else:
+            cs = int(self.mp.chunk_size)
+            if cs <= 0:
+                raise ValueError("chunk_size must be positive")
+            chunks = [np.arange(i, min(i + cs, N)) for i in range(0, N, cs)]
+        return [idx for idx in chunks if idx.size > 0]
+
     def _ensure_pool_and_chunks(self, X: np.ndarray) -> None:
         """Инициализирует пул процессов, разделяемый X и разбиение индексов, если ещё не сделано."""
         if self._pool is not None and self._chunks is not None:
@@ -117,17 +126,7 @@ class KMeansCPUMultiprocessing(KMeansBase):
         n_procs = max(1, min(int(self.mp.n_processes), cpu_count()))
         N = X.shape[0]
 
-        # Разбиение индексов на чанки
-        if self.mp.chunk_size is None:
-            chunks = np.array_split(np.arange(N), n_procs)
-        else:
-            cs = int(self.mp.chunk_size)
-            if cs <= 0:
-                raise ValueError("chunk_size must be positive")
-            chunks = [np.arange(i, min(i + cs, N)) for i in range(0, N, cs)]
-
-        # фильтруем пустые чанки заранее
-        self._chunks = [idx for idx in chunks if idx.size > 0]
+        self._chunks = self._make_chunks(N, n_procs)
 
         # создаём разделяемый буфер под X и копируем данные один раз
         X_c = np.ascontiguousarray(X, dtype=np.float64)

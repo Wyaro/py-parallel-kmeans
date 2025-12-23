@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Callable, Dict, List
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -49,12 +50,20 @@ class ExperimentRunner:
         logger = _PrefixedLogger(self.logger, self._dataset_prefix)
         return self.model_factory(n_clusters=K, logger=logger)
 
-    def run(self, repeats: int = 100, warmup: int = 3) -> Dict[str, Any]:
+    def run(
+        self,
+        repeats: int = 100,
+        warmup: int = 3,
+        max_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Запускает несколько прогонов KMeans с таймингом.
 
         :param repeats: количество измеряемых прогонов
         :param warmup: количество «разогревочных» запусков
+        :param max_seconds: лимит стендового времени (warmup + измеряемые прогоны).
+            Если прогнозируемое время превысит лимит, цикл прерывается, а
+            результаты дополняются оценкой оставшегося времени.
         :return: словарь с агрегированной статистикой времени
         """
         X = self.dataset.X
@@ -63,16 +72,21 @@ class ExperimentRunner:
         if self.logger:
             self.logger.info(f"{self._dataset_prefix} Warmup x{warmup}")
 
-        # тёплый прогон (не учитываем во времени)
+        warmup_start = time.perf_counter()
+        # тёплый прогон (не учитываем в финальной статистике, но учитываем во времени стены)
         for _ in range(warmup):
             model = self._create_model()
             model.fit(X, centroids)
+        warmup_elapsed = time.perf_counter() - warmup_start
 
         times: List[float] = []
         assign_totals: List[float] = []
         update_totals: List[float] = []
         iter_totals: List[float] = []
         runs: List[Dict[str, float]] = []
+
+        estimated = False
+        estimated_total_seconds: float | None = None
 
         for run_idx in range(1, repeats + 1):
             if self.logger:
@@ -103,6 +117,21 @@ class ExperimentRunner:
                 }
             )
 
+            if max_seconds is not None and times:
+                avg_time = float(sum(times) / len(times))
+                remaining = (repeats - run_idx) * avg_time
+                spent = warmup_elapsed + sum(times)
+                if spent + remaining > max_seconds:
+                    estimated = True
+                    estimated_total_seconds = spent + remaining
+                    if self.logger:
+                        self.logger.warning(
+                            f"{self._dataset_prefix} Ранний выход по лимиту времени: "
+                            f"spent={spent:.2f}s, remaining_est={remaining:.2f}s, "
+                            f"limit={max_seconds:.2f}s"
+                        )
+                    break
+
         stats: Dict[str, Any] = {
             # полное время одного запуска KMeans (по внешнему таймеру)
             "T_fit_avg": float(np.mean(times)),
@@ -115,6 +144,13 @@ class ExperimentRunner:
             "T_iter_total_avg": float(np.mean(iter_totals)),
             # подробные метрики по каждому запуску
             "runs": runs,
+            # информация об оценке/лимите
+            "estimated": estimated,
+            "repeats_done": len(times),
+            "repeats_requested": repeats,
+            "estimated_total_seconds": estimated_total_seconds,
+            "warmup_seconds": warmup_elapsed,
+            "time_spent_seconds": warmup_elapsed + sum(times),
         }
 
         if self.logger:

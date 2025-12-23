@@ -9,6 +9,11 @@ from kmeans.experiments.config import (
     REPEATS_SCALING_K,
 )
 from kmeans.utils.logging import format_dataset_prefix
+from kmeans.core.gpu_numpy import (
+    gpu_available,
+    KMeansGPUCuPy,
+    KMeansGPUCuPyBincount,
+)
 
 
 class ExperimentSuite:
@@ -24,12 +29,39 @@ class ExperimentSuite:
         dataset_cls: Type[Any],
         runner_cls: Type[Any],
         logger: logging.Logger | None = None,
+        max_seconds: float | None = None,
+        result_sink: Callable[[dict], None] | None = None,
     ) -> None:
         self.registry = registry
         self.model_factory = model_factory
         self.dataset_cls = dataset_cls
         self.runner_cls = runner_cls
         self.logger = logger or logging.getLogger("kmeans")
+        self._gpu_ok = gpu_available()
+        self.max_seconds = max_seconds
+        self._sink = result_sink
+
+    def _emit(self, result: dict) -> None:
+        if self._sink:
+            self._sink(result)
+
+    def _gpu_variants(self) -> list[tuple[str, Callable[..., Any]]]:
+        if not self._gpu_ok:
+            return []
+        return [
+            (
+                "python_gpu_cupy",
+                lambda *, n_clusters, logger=None: KMeansGPUCuPy(
+                    n_clusters=n_clusters, logger=logger
+                ),
+            ),
+            (
+                "python_gpu_cupy_bincount",
+                lambda *, n_clusters, logger=None: KMeansGPUCuPyBincount(
+                    n_clusters=n_clusters, logger=logger
+                ),
+            ),
+        ]
 
     # --- Вспомогательное ---
 
@@ -76,16 +108,16 @@ class ExperimentSuite:
             )
             dataset = self.dataset_cls(self.registry.datasets_root, info)
             runner = self.runner_cls(dataset, self.model_factory, self.logger)
-            timing = runner.run()
+            timing = runner.run(max_seconds=self.max_seconds)
 
-            results.append(
-                {
-                    "experiment": "all",
-                    "implementation": "python_cpu_numpy",
-                    "dataset": info,
-                    "timing": timing,
-                }
-            )
+            res = {
+                "experiment": "all",
+                "implementation": "python_cpu_numpy",
+                "dataset": info,
+                "timing": timing,
+            }
+            results.append(res)
+            self._emit(res)
 
         return results
 
@@ -116,15 +148,16 @@ class ExperimentSuite:
             timing = runner.run(
                 repeats=cfg.params["repeats"],
                 warmup=cfg.params["warmup"],
+                max_seconds=self.max_seconds,
             )
-            results.append(
-                {
-                    "experiment": cfg.id.value,
-                    "implementation": "python_cpu_numpy",
-                    "dataset": info,
-                    "timing": timing,
-                }
-            )
+            res = {
+                "experiment": cfg.id.value,
+                "implementation": "python_cpu_numpy",
+                "dataset": info,
+                "timing": timing,
+            }
+            results.append(res)
+            self._emit(res)
 
         return results
 
@@ -176,16 +209,16 @@ class ExperimentSuite:
                 )
 
             runner_single = self.runner_cls(dataset, single_model_factory, self.logger)
-            timing_single = runner_single.run(repeats=repeats, warmup=3)
+            timing_single = runner_single.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-            results.append(
-                {
-                    "experiment": cfg.id.value,
-                    "implementation": "python_cpu_numpy",
-                    "dataset": info,
-                    "timing": timing_single,
-                }
-            )
+            res_single = {
+                "experiment": cfg.id.value,
+                "implementation": "python_cpu_numpy",
+                "dataset": info,
+                "timing": timing_single,
+            }
+            results.append(res_single)
+            self._emit(res_single)
 
             # 2) Многопроцессная реализация на максимуме доступных ядер
             self.logger.info(
@@ -203,17 +236,33 @@ class ExperimentSuite:
                 )
 
             runner_mp = self.runner_cls(dataset, mp_model_factory, self.logger)
-            timing_mp = runner_mp.run(repeats=repeats, warmup=3)
+            timing_mp = runner_mp.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-            results.append(
-                {
+            res_mp = {
+                "experiment": cfg.id.value,
+                "implementation": f"python_cpu_mp_{max_procs}",
+                "threads": max_procs,
+                "dataset": info,
+                "timing": timing_mp,
+            }
+            results.append(res_mp)
+            self._emit(res_mp)
+
+            # 3) GPU реализации (если доступны)
+            for impl_name, factory in self._gpu_variants():
+                self.logger.info(
+                    f"[scaling_N {idx}/{len(infos)}] Running {impl_name}"
+                )
+                runner_gpu = self.runner_cls(dataset, factory, self.logger)
+                timing_gpu = runner_gpu.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
+                res_gpu = {
                     "experiment": cfg.id.value,
-                    "implementation": f"python_cpu_mp_{max_procs}",
-                    "threads": max_procs,
+                    "implementation": impl_name,
                     "dataset": info,
-                    "timing": timing_mp,
+                    "timing": timing_gpu,
                 }
-            )
+                results.append(res_gpu)
+                self._emit(res_gpu)
 
         return results
 
@@ -237,16 +286,31 @@ class ExperimentSuite:
             )
             dataset = self.dataset_cls(self.registry.datasets_root, info)
             runner = self.runner_cls(dataset, self.model_factory, self.logger)
-            timing = runner.run(repeats=repeats, warmup=3)
+            timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-            results.append(
-                {
+            res = {
+                "experiment": cfg.id.value,
+                "implementation": "python_cpu_numpy",
+                "dataset": info,
+                "timing": timing,
+            }
+            results.append(res)
+            self._emit(res)
+
+            for impl_name, factory in self._gpu_variants():
+                self.logger.info(
+                    f"[scaling_D {idx}/{len(infos)}] Running {impl_name}"
+                )
+                runner_gpu = self.runner_cls(dataset, factory, self.logger)
+                timing_gpu = runner_gpu.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
+                res_gpu = {
                     "experiment": cfg.id.value,
-                    "implementation": "python_cpu_numpy",
+                    "implementation": impl_name,
                     "dataset": info,
-                    "timing": timing,
+                    "timing": timing_gpu,
                 }
-            )
+                results.append(res_gpu)
+                self._emit(res_gpu)
 
         return results
 
@@ -270,16 +334,31 @@ class ExperimentSuite:
             )
             dataset = self.dataset_cls(self.registry.datasets_root, info)
             runner = self.runner_cls(dataset, self.model_factory, self.logger)
-            timing = runner.run(repeats=repeats, warmup=3)
+            timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-            results.append(
-                {
+            res = {
+                "experiment": cfg.id.value,
+                "implementation": "python_cpu_numpy",
+                "dataset": info,
+                "timing": timing,
+            }
+            results.append(res)
+            self._emit(res)
+
+            for impl_name, factory in self._gpu_variants():
+                self.logger.info(
+                    f"[scaling_K {idx}/{len(infos)}] Running {impl_name}"
+                )
+                runner_gpu = self.runner_cls(dataset, factory, self.logger)
+                timing_gpu = runner_gpu.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
+                res_gpu = {
                     "experiment": cfg.id.value,
-                    "implementation": "python_cpu_numpy",
+                    "implementation": impl_name,
                     "dataset": info,
-                    "timing": timing,
+                    "timing": timing_gpu,
                 }
-            )
+                results.append(res_gpu)
+                self._emit(res_gpu)
 
         return results
 
@@ -336,16 +415,54 @@ class ExperimentSuite:
                 )
 
             runner = self.runner_cls(dataset, mp_model_factory, self.logger)
-            timing = runner.run(repeats=repeats, warmup=3)
+            timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
 
-            results.append(
-                {
-                    "experiment": cfg.id.value,
-                    "implementation": f"python_cpu_mp_{n_procs_eff}",
-                    "threads": n_procs_eff,
-                    "dataset": info,
-                    "timing": timing,
-                }
-            )
+            res = {
+                "experiment": cfg.id.value,
+                "implementation": f"python_cpu_mp_{n_procs_eff}",
+                "threads": n_procs_eff,
+                "dataset": info,
+                "timing": timing,
+            }
+            results.append(res)
+            self._emit(res)
+
+        return results
+
+    # --- Эксперимент 6: GPU профилирование ---
+
+    def run_exp6_gpu_profile(self) -> List[dict]:
+        """
+        Профилируем GPU-реализации на фиксированном крупном датасете.
+        """
+        cfg = EXPERIMENTS[ExperimentId.GPU_PROFILE]
+        if not self._gpu_ok:
+            self.logger.warning("GPU недоступен: пропуск exp6_gpu_profile")
+            return []
+
+        infos = list(self._select_datasets(N=cfg.params["N"], D=cfg.params["D"], K=cfg.params["K"]))
+        if not infos:
+            raise ValueError("Не найден датасет для GPU профилирования")
+
+        info = infos[0]
+        repeats = cfg.params["repeats"]
+        prefix = format_dataset_prefix(info)
+        self.logger.info(f"[gpu_profile] Dataset {prefix} repeats={repeats}")
+
+        dataset = self.dataset_cls(self.registry.datasets_root, info)
+        results: List[dict] = []
+
+        for impl_name, factory in self._gpu_variants():
+            self.logger.info(f"[gpu_profile] Running {impl_name}")
+            runner = self.runner_cls(dataset, factory, self.logger)
+            timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
+            res = {
+                "experiment": cfg.id.value,
+                "implementation": impl_name,
+                "dataset": info,
+                "timing": timing,
+            }
+            results.append(res)
+            self._emit(res)
 
         return results
