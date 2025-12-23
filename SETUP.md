@@ -91,6 +91,11 @@
 
 2. **Установите соответствующую версию CuPy**
    
+   Для CUDA 13.x:
+   ```bash
+   pip install cupy-cuda13x
+   ```
+   
    Для CUDA 12.x:
    ```bash
    pip install cupy-cuda12x
@@ -153,7 +158,7 @@ print(f"GPU доступен: {gpu_available()}")
 
 **Решение**:
 - CuPy требует CUDA Toolkit. Установите его с официального сайта NVIDIA
-- Используйте правильную версию: `cupy-cuda12x` для CUDA 12.x
+- Используйте правильную версию: `cupy-cuda13x` для CUDA 13.x, `cupy-cuda12x` для CUDA 12.x, `cupy-cuda11x` для CUDA 11.x
 - GPU поддержка опциональна - проект работает и без неё
 
 ## Альтернативные способы установки

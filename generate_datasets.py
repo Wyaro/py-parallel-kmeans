@@ -29,6 +29,9 @@ class DatasetConfig:
     cluster_std: float = 1.0
     seed_offset: int = 0
     purpose: str | None = None
+    center_box_range: tuple[float, float] = (-3.0, 3.0)  # Более компактное расположение
+    add_noise: bool = True  # Добавлять шум после нормализации
+    noise_std: float = 0.1  # Стандартное отклонение шума
 
 
 @dataclass
@@ -75,16 +78,25 @@ class DatasetGenerator:
         K: int,
         cluster_std: float = 1.0,
         seed_offset: int = 0,
+        center_box_range: tuple[float, float] = (-3.0, 3.0),
+        add_noise: bool = True,
+        noise_std: float = 0.1,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Генерация синтетического датасета с помощью make_blobs.
+
+        Использует более компактное расположение кластеров и увеличенное
+        стандартное отклонение для создания перекрытия и усложнения задачи.
 
         Args:
             N: Количество точек
             D: Размерность пространства
             K: Количество кластеров
-            cluster_std: Стандартное отклонение кластеров
+            cluster_std: Стандартное отклонение кластеров (увеличено для перекрытия)
             seed_offset: Смещение seed для разных конфигураций
+            center_box_range: Диапазон расположения центров кластеров (компактнее)
+            add_noise: Добавлять ли шум после нормализации
+            noise_std: Стандартное отклонение шума
 
         Returns:
             Кортеж (data, labels, centers):
@@ -92,17 +104,24 @@ class DatasetGenerator:
             - labels: метки кластеров (N,)
             - centers: центры кластеров (K x D)
         """
-        np.random.seed(self.base_seed)
+        np.random.seed(self.base_seed + seed_offset)
 
-        print(f"Генерация: N={N:,}, D={D}, K={K}, seed={self.base_seed}")
+        print(
+            f"Генерация: N={N:,}, D={D}, K={K}, cluster_std={cluster_std:.2f}, "
+            f"center_box={center_box_range}, seed={self.base_seed + seed_offset}"
+        )
+
+        # Увеличиваем стандартное отклонение для создания перекрытия кластеров
+        # Используем адаптивное значение в зависимости от K и D
+        effective_std = cluster_std * (1.2 + 0.1 * np.log(K))  # Больше для большего K
 
         data, labels, centers = make_blobs(
             n_samples=N,
             n_features=D,
             centers=K,
-            cluster_std=cluster_std,
-            center_box=(-10.0, 10.0),
-            random_state=self.base_seed,
+            cluster_std=effective_std,
+            center_box=center_box_range,  # Более компактное расположение
+            random_state=self.base_seed + seed_offset,
             return_centers=True,
         )
 
@@ -110,6 +129,12 @@ class DatasetGenerator:
         scaler = StandardScaler()
         data = scaler.fit_transform(data)
         centers = scaler.transform(centers)
+
+        # Добавляем небольшой шум после нормализации для дополнительного усложнения
+        if add_noise:
+            noise = np.random.normal(0, noise_std, data.shape)
+            data = data + noise
+            # Центры не шумим, так как они используются как начальные центроиды
 
         return data, labels, centers
 
@@ -132,6 +157,9 @@ class DatasetGenerator:
             "D": config.D,
             "K": config.K,
             "cluster_std": config.cluster_std,
+            "center_box_range": list(config.center_box_range),
+            "add_noise": config.add_noise,
+            "noise_std": config.noise_std if config.add_noise else None,
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "total_points": len(data),
             "dimensions": data.shape[1],
@@ -224,6 +252,9 @@ class DatasetGenerator:
             K=config.K,
             cluster_std=config.cluster_std,
             seed_offset=config.seed_offset,
+            center_box_range=config.center_box_range,
+            add_noise=config.add_noise,
+            noise_std=config.noise_std,
         )
 
         metadata = self._create_metadata(config, data, centers)
@@ -240,7 +271,16 @@ class DatasetGenerator:
         print("Генерация базовых конфигураций")
         print("=" * 60)
 
-        config = DatasetConfig(N=100_000, D=50, K=8, cluster_std=1.0)
+        # Увеличиваем cluster_std и используем компактное расположение для усложнения
+        config = DatasetConfig(
+            N=100_000,
+            D=50,
+            K=8,
+            cluster_std=1.5,  # Увеличено для перекрытия кластеров
+            center_box_range=(-3.0, 3.0),  # Компактное расположение
+            add_noise=True,
+            noise_std=0.1,
+        )
         self._generate_and_save(config, "base")
 
     def generate_scaling_N(self) -> None:
@@ -264,9 +304,12 @@ class DatasetGenerator:
                 N=N,
                 D=50,
                 K=8,
-                cluster_std=1.0,
+                cluster_std=1.5,  # Увеличено для перекрытия
                 seed_offset=i,
                 purpose="scaling_by_N",
+                center_box_range=(-3.0, 3.0),
+                add_noise=True,
+                noise_std=0.1,
             )
             self._generate_and_save(config, "scaling_N")
 
@@ -279,13 +322,18 @@ class DatasetGenerator:
         D_values = [2, 10, 50, 200]
 
         for i, D in enumerate(D_values):
+            # Для большей размерности немного увеличиваем компактность
+            center_range = (-2.5, 2.5) if D > 50 else (-3.0, 3.0)
             config = DatasetConfig(
                 N=100_000,
                 D=D,
                 K=8,
-                cluster_std=1.0,
+                cluster_std=1.5,  # Увеличено для перекрытия
                 seed_offset=i + 10,
                 purpose="scaling_by_D",
+                center_box_range=center_range,
+                add_noise=True,
+                noise_std=0.1,
             )
             self._generate_and_save(config, "scaling_D")
 
@@ -298,13 +346,20 @@ class DatasetGenerator:
         K_values = [4, 8, 16, 32]
 
         for i, K in enumerate(K_values):
+            # Для большего количества кластеров увеличиваем стандартное отклонение
+            # и делаем расположение более компактным для создания перекрытия
+            adaptive_std = 1.2 + 0.2 * np.log2(K)  # Больше для большего K
+            center_range = (-2.5, 2.5) if K > 8 else (-3.0, 3.0)
             config = DatasetConfig(
                 N=100_000,
                 D=50,
                 K=K,
-                cluster_std=1.0,
+                cluster_std=adaptive_std,
                 seed_offset=i + 20,
                 purpose="scaling_by_K",
+                center_box_range=center_range,
+                add_noise=True,
+                noise_std=0.1,
             )
             self._generate_and_save(config, "scaling_K")
 
@@ -318,9 +373,12 @@ class DatasetGenerator:
             N=1_000,
             D=10,
             K=4,
-            cluster_std=0.5,
+            cluster_std=1.2,  # Увеличено для усложнения
             seed_offset=100,
             purpose="validation",
+            center_box_range=(-3.0, 3.0),
+            add_noise=True,
+            noise_std=0.08,  # Меньший шум для валидации
         )
         self._generate_and_save(config, "validation", "validation_dataset.txt")
 
