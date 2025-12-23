@@ -21,7 +21,7 @@ def main() -> None:
     generator.generate_all()
 
     # Визуализация датасетов
-    visualize_all_datasets()
+    #visualize_all_datasets()
 
     # Анализ результатов экспериментов
     root = Path(__file__).resolve().parent

@@ -138,17 +138,32 @@ compute_stats_from_results("kmeans_timing_results.json")
 
 ### Установка
 
+#### Быстрая установка
+
 ```bash
 # Клонирование репозитория
 git clone <repository-url>
 cd parallel
 
-# Установка базовых зависимостей
-pip install numpy scikit-learn matplotlib
+# Создание виртуального окружения
+python -m venv .venv
 
-# Для GPU-реализаций (требуется CUDA)
+# Активация окружения
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
+
+# Установка зависимостей
+pip install -r requirements.txt
+
+# Для GPU-реализаций (опционально, требуется CUDA)
 pip install cupy-cuda12x  # или cupy-cuda11x в зависимости от версии CUDA
 ```
+
+#### Настройка в PyCharm
+
+Подробная инструкция по настройке виртуального окружения в PyCharm и других IDE доступна в файле [SETUP.md](SETUP.md).
 
 ### Проверка установки
 

@@ -1,5 +1,82 @@
+# Виртуальные окружения Python
 .venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Результаты экспериментов и данные
 datasets/
 visualizations/
+kmeans_timing_results.json
+timing_summary.json
+
+# Кэш Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Распределения и сборки
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyCharm / IntelliJ IDEA
 .idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Логи
+*.log
