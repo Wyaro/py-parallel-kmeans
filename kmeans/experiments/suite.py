@@ -113,46 +113,25 @@ class ExperimentSuite:
 
 
     def run_all(self) -> List[dict]:
+        """
+        Запускает все эксперименты по очереди, сохраняя оригинальные ID экспериментов
+        в результатах и логах.
+        """
         results: List[dict] = []
-        datasets_info: Iterable[dict] = list(self.registry.get_all())
 
-        for idx, info in enumerate(datasets_info, start=1):
-            prefix = format_dataset_prefix(info)
-            self.logger.info(
-                f"[{idx}/{len(datasets_info)}] Dataset {prefix} "
-                f"filepath={info.get('filepath')}"
-            )
-            dataset = self.dataset_cls(self.registry.datasets_root, info)
-            
-            # CPU реализация - пропускаем если gpu_only
-            if not self.gpu_only:
-                runner = self.runner_cls(dataset, self.model_factory, self.logger)
-                timing = runner.run(max_seconds=self.max_seconds)
+        runners = [
+            ("exp1_baseline_single", self.run_exp1_baseline_single),
+            ("exp2_scaling_n", self.run_exp2_scaling_n),
+            ("exp3_scaling_d", self.run_exp3_scaling_d),
+            ("exp4_scaling_k", self.run_exp4_scaling_k),
+            ("exp5_gpu_profile", self.run_exp5_gpu_profile),
+        ]
 
-                res = {
-                    "experiment": "all",
-                    "implementation": "python_cpu_numpy",
-                    "dataset": info,
-                    "timing": timing,
-                }
-                results.append(res)
-                self._emit(res)
-
-            # GPU реализации
-            for impl_name, factory in self._gpu_variants():
-                self.logger.info(
-                    f"[{idx}/{len(datasets_info)}] Running {impl_name}"
-                )
-                runner_gpu = self.runner_cls(dataset, factory, self.logger)
-                timing_gpu = runner_gpu.run(max_seconds=self.max_seconds)
-                res_gpu = {
-                    "experiment": "all",
-                    "implementation": impl_name,
-                    "dataset": info,
-                    "timing": timing_gpu,
-                }
-                results.append(res_gpu)
-                self._emit(res_gpu)
+        for name, fn in runners:
+            self.logger.info(f"[all] Starting {name}")
+            part = fn()
+            results.extend(part)
+            self.logger.info(f"[all] Finished {name}: {len(part)} records")
 
         return results
 
