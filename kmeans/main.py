@@ -32,7 +32,8 @@ def main() -> None:
         default="all",
         help="Какой эксперимент запустить "
         "(all, exp1_baseline_single, exp2_scaling_n, "
-        "exp3_scaling_d, exp4_scaling_k, exp5_strong_scaling, exp6_gpu_profile)",
+        "exp3_scaling_d, exp4_scaling_k, exp5_strong_scaling, exp6_gpu_profile). "
+        "Используйте --gpu-only для запуска только GPU реализаций.",
     )
     parser.add_argument(
         "--max-seconds",
@@ -41,9 +42,23 @@ def main() -> None:
         help="Лимит времени (в секундах) на warmup+замеры; "
         "при прогнозе превышения делаем ранний выход с оценкой.",
     )
+    parser.add_argument(
+        "--gpu-only",
+        action="store_true",
+        help="Запускать только GPU реализации (пропустить CPU алгоритмы).",
+    )
     args = parser.parse_args()
 
     logger = setup_logger()
+    
+    # Проверка доступности GPU при использовании --gpu-only
+    if args.gpu_only:
+        from kmeans.core.gpu_numpy import gpu_available
+        if not gpu_available():
+            logger.error("GPU недоступен, но указан флаг --gpu-only. Установите CuPy или уберите флаг.")
+            return
+        logger.info("Режим --gpu-only: будут запущены только GPU реализации")
+    
     registry = DatasetRegistry(
         summary_path=SUMMARY,
         datasets_root=DATASETS,
@@ -69,6 +84,7 @@ def main() -> None:
             logger=logger,
             max_seconds=args.max_seconds,
             result_sink=sink_writer,
+            gpu_only=args.gpu_only,
         )
 
     def make_suite_mp(n_procs: int) -> ExperimentSuite:
@@ -84,6 +100,7 @@ def main() -> None:
             logger=logger,
             max_seconds=args.max_seconds,
             result_sink=sink_writer,
+            gpu_only=args.gpu_only,
         )
 
     max_procs = cpu_count()

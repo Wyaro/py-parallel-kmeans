@@ -5,6 +5,8 @@
 выполнения участков кода с использованием time.perf_counter().
 """
 
+from __future__ import annotations
+
 import time
 from typing import Any
 
