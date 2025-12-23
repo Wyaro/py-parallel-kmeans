@@ -159,6 +159,12 @@ class ExperimentSuite:
     # --- Эксперимент 1: baseline single-thread ---
 
     def run_exp1_baseline_single(self) -> List[dict]:
+        """
+        Базовый эксперимент: только однопоточная CPU-реализация (python_cpu_numpy).
+        Используется как эталон для оценки ускорения.
+        """
+        from kmeans.core.cpu_numpy import KMeansCPUNumpy
+
         cfg = EXPERIMENTS[ExperimentId.BASELINE_SINGLE]
         flt = cfg.params["filter"]
 
@@ -179,10 +185,18 @@ class ExperimentSuite:
                 f"filepath={info.get('filepath')}"
             )
             dataset = self.dataset_cls(self.registry.datasets_root, info)
-            
-            # CPU реализация - пропускаем если gpu_only
+
             if not self.gpu_only:
-                runner = self.runner_cls(dataset, self.model_factory, self.logger)
+                self.logger.info(
+                    f"[baseline {idx}/{len(infos)}] Running python_cpu_numpy"
+                )
+                runner = self.runner_cls(
+                    dataset,
+                    lambda *, n_clusters, logger=None: KMeansCPUNumpy(
+                        n_clusters=n_clusters, n_iters=100, logger=logger
+                    ),
+                    self.logger,
+                )
                 timing = runner.run(
                     repeats=cfg.params["repeats"],
                     warmup=cfg.params["warmup"],
@@ -196,26 +210,6 @@ class ExperimentSuite:
                 }
                 results.append(res)
                 self._emit(res)
-
-            # GPU реализации
-            for impl_name, factory in self._gpu_variants():
-                self.logger.info(
-                    f"[baseline {idx}/{len(infos)}] Running {impl_name}"
-                )
-                runner_gpu = self.runner_cls(dataset, factory, self.logger)
-                timing_gpu = runner_gpu.run(
-                    repeats=cfg.params["repeats"],
-                    warmup=cfg.params["warmup"],
-                    max_seconds=self.max_seconds,
-                )
-                res_gpu = {
-                    "experiment": cfg.id.value,
-                    "implementation": impl_name,
-                    "dataset": info,
-                    "timing": timing_gpu,
-                }
-                results.append(res_gpu)
-                self._emit(res_gpu)
 
         return results
 
@@ -430,98 +424,15 @@ class ExperimentSuite:
 
         return results
 
-    # --- Эксперимент 5: strong scaling для multiprocessing-реализации ---
+    # --- Эксперимент 5: GPU профилирование ---
 
-    def run_exp5_strong_scaling(self) -> List[dict]:
-        """
-        Strong scaling по числу процессов для одного большого датасета N=1e6,D=50,K=8.
-
-        Для Python-реализации используется KMeansCPUMultiprocessing с разным
-        числом процессов; остальные реализации (C++/C#) предполагаются внешними.
-        """
-        from multiprocessing import cpu_count
-        from kmeans.core.cpu_multiprocessing import (
-            KMeansCPUMultiprocessing,
-            MultiprocessingConfig,
-        )
-
-        cfg = EXPERIMENTS[ExperimentId.STRONG_SCALING]
-
-        N = cfg.params["N"]
-        D = cfg.params["D"]
-        K = cfg.params["K"]
-        threads_list = cfg.params["threads"]
-        repeats = cfg.params["repeats"]
-
-        # выбираем датасет с такими N,D,K (purpose не фиксируем)
-        infos = list(self._select_datasets(N=N, D=D, K=K))
-        if not infos:
-            raise ValueError(f"No dataset found for strong scaling N={N}, D={D}, K={K}")
-
-        info = infos[0]
-        prefix = format_dataset_prefix(info)
-        self.logger.info(f"[strong_scaling] Dataset {prefix} filepath={info.get('filepath')}")
-
-        dataset = self.dataset_cls(self.registry.datasets_root, info)
-        results: List[dict] = []
-
-        max_procs = cpu_count()
-
-        # CPU multiprocessing реализации - пропускаем если gpu_only
-        if not self.gpu_only:
-            for n_procs in threads_list:
-                n_procs_eff = max(1, min(int(n_procs), max_procs))
-
-                self.logger.info(
-                    f"[strong_scaling] Python multiprocessing with n_procs={n_procs_eff}"
-                )
-
-                def mp_model_factory(*, n_clusters: int, logger=None) -> Any:
-                    return KMeansCPUMultiprocessing(
-                        n_clusters=n_clusters,
-                        n_iters=100,
-                        mp=MultiprocessingConfig(n_processes=n_procs_eff),
-                        logger=logger,
-                    )
-
-                runner = self.runner_cls(dataset, mp_model_factory, self.logger)
-                timing = runner.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
-
-                res = {
-                    "experiment": cfg.id.value,
-                    "implementation": f"python_cpu_mp_{n_procs_eff}",
-                    "threads": n_procs_eff,
-                    "dataset": info,
-                    "timing": timing,
-                }
-                results.append(res)
-                self._emit(res)
-
-        # GPU реализации для strong scaling
-        for impl_name, factory in self._gpu_variants():
-            self.logger.info(f"[strong_scaling] Running {impl_name}")
-            runner_gpu = self.runner_cls(dataset, factory, self.logger)
-            timing_gpu = runner_gpu.run(repeats=repeats, warmup=3, max_seconds=self.max_seconds)
-            res_gpu = {
-                "experiment": cfg.id.value,
-                "implementation": impl_name,
-                "dataset": info,
-                "timing": timing_gpu,
-            }
-            results.append(res_gpu)
-            self._emit(res_gpu)
-
-        return results
-
-    # --- Эксперимент 6: GPU профилирование ---
-
-    def run_exp6_gpu_profile(self) -> List[dict]:
+    def run_exp5_gpu_profile(self) -> List[dict]:
         """
         Профилируем GPU-реализации на фиксированном крупном датасете.
         """
         cfg = EXPERIMENTS[ExperimentId.GPU_PROFILE]
         if not self._gpu_ok:
-            self.logger.warning("GPU недоступен: пропуск exp6_gpu_profile")
+            self.logger.warning("GPU недоступен: пропуск exp5_gpu_profile")
             return []
 
         infos = list(self._select_datasets(N=cfg.params["N"], D=cfg.params["D"], K=cfg.params["K"]))

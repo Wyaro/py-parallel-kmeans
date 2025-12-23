@@ -10,8 +10,7 @@ class ExperimentId(str, Enum):
     SCALING_N = "exp2_scaling_n"
     SCALING_D = "exp3_scaling_d"
     SCALING_K = "exp4_scaling_k"
-    STRONG_SCALING = "exp5_strong_scaling"
-    GPU_PROFILE = "exp6_gpu_profile"
+    GPU_PROFILE = "exp5_gpu_profile"
 
 
 @dataclass
@@ -55,7 +54,7 @@ EXPERIMENTS: Dict[ExperimentId, ExperimentConfig] = {
         params={
             # берём ровно один базовый датасет (purpose="base")
             "filter": {"N": 100_000, "D": 50, "K": 8, "purpose": "base"},
-            "repeats": 50,
+            "repeats": 30,
             "warmup": 3,
         },
     ),
@@ -86,22 +85,9 @@ EXPERIMENTS: Dict[ExperimentId, ExperimentConfig] = {
             "repeats_by_K": REPEATS_SCALING_K,
         },
     ),
-    # 5 и 6 — в основном для C++/C#/GPU; здесь только конфигурация
-    ExperimentId.STRONG_SCALING: ExperimentConfig(
-        id=ExperimentId.STRONG_SCALING,
-        description="Эксперимент 5: strong scaling для многопоточных CPU реализаций",
-        implementations=["cpp_openmp", "csharp_tpl", "python_cpu_mt"],
-        params={
-            "N": 1_000_000,
-            "D": 50,
-            "K": 8,
-            "threads": [2, 4, 8, 16],
-            "repeats": 15,
-        },
-    ),
     ExperimentId.GPU_PROFILE: ExperimentConfig(
         id=ExperimentId.GPU_PROFILE,
-        description="Эксперимент 6: GPU профилирование (Nsight Compute)",
+        description="Эксперимент 5: GPU профилирование (Nsight Compute)",
         implementations=["gpu"],
         params={
             "N": 1_000_000,

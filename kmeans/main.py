@@ -27,12 +27,11 @@ def main() -> None:
     parser.add_argument(
         "--experiment",
         type=str,
-        choices=[e.value for e in ExperimentId]
-        + ["all"],
+        choices=[e.value for e in ExperimentId] + ["all"],
         default="all",
         help="Какой эксперимент запустить "
         "(all, exp1_baseline_single, exp2_scaling_n, "
-        "exp3_scaling_d, exp4_scaling_k, exp5_strong_scaling, exp6_gpu_profile). "
+        "exp3_scaling_d, exp4_scaling_k, exp5_gpu_profile). "
         "Используйте --gpu-only для запуска только GPU реализаций.",
     )
     parser.add_argument(
@@ -123,13 +122,9 @@ def main() -> None:
         # масштабирование по K на максимальном числе ядер
         suite = make_suite_mp(max_procs)
         results = suite.run_exp4_scaling_k()
-    elif args.experiment == ExperimentId.STRONG_SCALING.value:
-        # strong scaling по числу процессов для Python multiprocessing
-        suite = make_suite_single()  # модель задаётся внутри run_exp5_strong_scaling
-        results = suite.run_exp5_strong_scaling()
     elif args.experiment == ExperimentId.GPU_PROFILE.value:
         suite = make_suite_single()  # dataset_cls/runner_cls те же
-        results = suite.run_exp6_gpu_profile()
+        results = suite.run_exp5_gpu_profile()
     else:
         raise ValueError(f"Experiment {args.experiment} is not implemented in Python runner.")
 
