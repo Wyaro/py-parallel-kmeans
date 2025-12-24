@@ -16,7 +16,16 @@ import argparse
 
 
 def parse_summary_file(filepath: str | Path) -> List[Dict]:
-    """Парсит файл analysis_summary.txt и извлекает данные о результатах экспериментов."""
+    """
+    Парсит файл analysis_summary.txt в новом формате.
+    
+    Формат:
+    exp2_scaling_n | N=100,000 D=50 K=8
+    ================================================================================
+    Реализация                     Итер   T_назн (мс)     T_обн (мс)      T_итер (мс)     T_общ (мс)     
+    --------------------------------------------------------------------------------
+    python_gpu_cupy_v1               3.0   0.194 (0.178)   0.583 (0.555)   0.777 (0.740)   3.214 (3.120)
+    """
     results: list[dict] = []
 
     filepath = Path(filepath)
@@ -27,86 +36,95 @@ def parse_summary_file(filepath: str | Path) -> List[Dict]:
     while i < len(lines):
         line = lines[i].strip()
         
-        # Ищем строку с экспериментом
-        if line.startswith('Эксперимент:'):
-            parts = line.split(',')
-            if len(parts) >= 2:
-                experiment = parts[0].replace('Эксперимент:', '').strip()
-                implementation = parts[1].replace('реализация:', '').strip()
+        # Ищем строку с экспериментом и датасетом: "exp2_scaling_n | N=100,000 D=50 K=8"
+        if '|' in line and ('exp' in line.lower() or line.startswith('all')):
+            # Парсим заголовок: "exp2_scaling_n | N=100,000 D=50 K=8"
+            parts = line.split('|')
+            if len(parts) == 2:
+                experiment = parts[0].strip()
+                dataset_str = parts[1].strip()
                 
-                # Читаем следующие строки
-                i += 1
+                # Извлекаем N, D, K (убираем запятые из чисел)
+                n_match = re.search(r'N=([\d,]+)', dataset_str)
+                d_match = re.search(r'D=(\d+)', dataset_str)
+                k_match = re.search(r'K=(\d+)', dataset_str)
+                
                 dataset_info = {}
-                n_iters = None
-                T_assign = None
-                T_update = None
-                T_iter = None
-                T_total = None
+                if n_match:
+                    N_str = n_match.group(1).replace(',', '')
+                    dataset_info['N'] = int(N_str)
+                if d_match:
+                    dataset_info['D'] = int(d_match.group(1))
+                if k_match:
+                    dataset_info['K'] = int(k_match.group(1))
                 
-                while i < len(lines) and not lines[i].strip().startswith('Эксперимент:'):
-                    line = lines[i].strip()
+                # Пропускаем разделители и заголовок таблицы
+                i += 1
+                while i < len(lines) and (lines[i].strip().startswith('=') or 
+                                         lines[i].strip().startswith('-') or
+                                         'Реализация' in lines[i] or
+                                         not lines[i].strip()):
+                    i += 1
+                
+                # Читаем строки с данными
+                while i < len(lines):
+                    data_line = lines[i].strip()
                     
-                    if line.startswith('Датасет:'):
-                        # Извлекаем N, D, K
-                        n_match = re.search(r'N=(\d+)', line)
-                        d_match = re.search(r'D=(\d+)', line)
-                        k_match = re.search(r'K=(\d+)', line)
-                        if n_match:
-                            dataset_info['N'] = int(n_match.group(1))
-                        if d_match:
-                            dataset_info['D'] = int(d_match.group(1))
-                        if k_match:
-                            dataset_info['K'] = int(k_match.group(1))
+                    # Проверяем, не начался ли новый блок
+                    if '|' in data_line and ('exp' in data_line.lower() or data_line.startswith('all')):
+                        break
                     
-                    elif 'Среднее количество итераций:' in line:
-                        n_iters_match = re.search(r'([\d.]+)', line)
-                        if n_iters_match:
-                            n_iters = float(n_iters_match.group(1))
+                    if not data_line or data_line.startswith('=') or data_line.startswith('-'):
+                        i += 1
+                        continue
                     
-                    elif 'Tназначения' in line and 'ср=' in line:
-                        match = re.search(r'ср=([\d.]+)', line)
-                        if match:
-                            T_assign = float(match.group(1))
-                    
-                    elif 'Tобновления' in line and 'ср=' in line:
-                        match = re.search(r'ср=([\d.]+)', line)
-                        if match:
-                            T_update = float(match.group(1))
-                    
-                    elif 'Tитерации' in line and 'ср=' in line:
-                        match = re.search(r'ср=([\d.]+)', line)
-                        if match:
-                            T_iter = float(match.group(1))
-                    
-                    elif 'Tобщ' in line and 'ср=' in line:
-                        match = re.search(r'ср=([\d.]+)', line)
-                        if match:
-                            T_total = float(match.group(1))
+                    # Парсим строку: "python_gpu_cupy_v1   3.0   0.194 (0.178)   0.583 (0.555)   0.777 (0.740)   3.214 (3.120)"
+                    # Формат: реализация, итер, T_назн (мед), T_обн (мед), T_итер (мед), T_общ (мед)
+                    parts = data_line.split()
+                    if len(parts) >= 6:
+                        implementation = parts[0]
+                        
+                        try:
+                            n_iters = float(parts[1])
+                            
+                            # Извлекаем средние значения (первые числа в скобках)
+                            # Формат: "0.194 (0.178)" -> берем 0.194
+                            T_assign_str = parts[2]  # "0.194"
+                            T_update_str = parts[4]   # "0.583"
+                            T_iter_str = parts[6]     # "0.777"
+                            T_total_str = parts[8]    # "3.214"
+                            
+                            T_assign = float(T_assign_str)
+                            T_update = float(T_update_str)
+                            T_iter = float(T_iter_str)
+                            T_total = float(T_total_str)
+                            
+                            # Извлекаем количество потоков из названия реализации
+                            threads = None
+                            if 'mp_' in implementation:
+                                threads_match = re.search(r'mp_(\d+)', implementation)
+                                if threads_match:
+                                    threads = int(threads_match.group(1))
+                            
+                            results.append({
+                                'experiment': experiment,
+                                'implementation': implementation,
+                                'N': dataset_info.get('N', 0),
+                                'D': dataset_info.get('D', 0),
+                                'K': dataset_info.get('K', 0),
+                                'n_iters': n_iters,
+                                'T_assign': T_assign,
+                                'T_update': T_update,
+                                'T_iter': T_iter,
+                                'T_total': T_total,  # в мс
+                                'threads': threads,
+                            })
+                        except (ValueError, IndexError):
+                            # Пропускаем некорректные строки
+                            pass
                     
                     i += 1
                 
-                # Если собрали все данные, добавляем результат
-                if dataset_info and n_iters is not None and T_total is not None:
-                    # Извлекаем количество потоков из названия реализации
-                    threads = None
-                    if 'mp_' in implementation:
-                        threads_match = re.search(r'mp_(\d+)', implementation)
-                        if threads_match:
-                            threads = int(threads_match.group(1))
-                    
-                    results.append({
-                        'experiment': experiment,
-                        'implementation': implementation,
-                        'N': dataset_info.get('N', 0),
-                        'D': dataset_info.get('D', 0),
-                        'K': dataset_info.get('K', 0),
-                        'n_iters': n_iters,
-                        'T_assign': T_assign or 0.0,
-                        'T_update': T_update or 0.0,
-                        'T_iter': T_iter or 0.0,
-                        'T_total': T_total,  # в мс
-                        'threads': threads,
-                    })
                 continue
         
         i += 1
