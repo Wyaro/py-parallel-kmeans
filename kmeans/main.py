@@ -116,16 +116,16 @@ def main() -> None:
         suite = make_suite_single()
         results = suite.run_exp1_baseline_single()
     elif args.experiment == ExperimentId.SCALING_N.value:
-        # масштабирование по N: внутри запускаются и single, и multi-process
+        # Масштабирование по N: внутри запускаются single, multiprocessing и GPU
         suite = make_suite_single()
         results = suite.run_exp2_scaling_n()
     elif args.experiment == ExperimentId.SCALING_D.value:
-        # масштабирование по D на максимальном числе ядер
-        suite = make_suite_mp(max_procs)
+        # Масштабирование по D: single, multiprocessing и GPU
+        suite = make_suite_single()
         results = suite.run_exp3_scaling_d()
     elif args.experiment == ExperimentId.SCALING_K.value:
-        # масштабирование по K на максимальном числе ядер
-        suite = make_suite_mp(max_procs)
+        # Масштабирование по K: single, multiprocessing и GPU
+        suite = make_suite_single()
         results = suite.run_exp4_scaling_k()
     elif args.experiment == ExperimentId.GPU_PROFILE.value:
         suite = make_suite_single()  # dataset_cls/runner_cls те же

@@ -76,7 +76,41 @@ class ExperimentRunner:
         # тёплый прогон (не учитываем в финальной статистике, но учитываем во времени стены)
         for _ in range(warmup):
             model = self._create_model()
-            model.fit(X, centroids)
+            try:
+                model.fit(X, centroids)
+            except Exception as e:
+                # Обработка OutOfMemoryError для GPU реализаций
+                error_name = type(e).__name__
+                if "OutOfMemoryError" in error_name or "OutOfMemory" in str(e):
+                    if self.logger:
+                        self.logger.error(
+                            f"{self._dataset_prefix} OutOfMemoryError при warmup: "
+                            f"{error_name}. Пропуск этой реализации."
+                        )
+                    # Возвращаем пустой результат, чтобы эксперимент продолжился
+                    return {
+                        "T_fit_avg": 0.0,
+                        "T_fit_std": 0.0,
+                        "T_fit_min": 0.0,
+                        "T_assign_total_avg": 0.0,
+                        "T_update_total_avg": 0.0,
+                        "T_iter_total_avg": 0.0,
+                        "throughput_ops_avg": 0.0,
+                        "throughput_ops_med": 0.0,
+                        "T_transfer_avg": 0.0,
+                        "T_transfer_med": 0.0,
+                        "T_transfer_ratio_avg": 0.0,
+                        "T_transfer_ratio_med": 0.0,
+                        "runs": [],
+                        "estimated": False,
+                        "repeats_done": 0,
+                        "repeats_requested": repeats,
+                        "estimated_total_seconds": None,
+                        "warmup_seconds": 0.0,
+                        "time_spent_seconds": 0.0,
+                        "error": f"OutOfMemoryError: {str(e)}",
+                    }
+                raise
         warmup_elapsed = time.perf_counter() - warmup_start
 
         times: List[float] = []
@@ -96,9 +130,22 @@ class ExperimentRunner:
                 self.logger.info(f"{self._dataset_prefix} Run {run_idx}/{repeats}")
 
             model = self._create_model()
-            with Timer() as t_fit:
-                model.fit(X, centroids)
-            t_fit_val = float(t_fit.elapsed)
+            try:
+                with Timer() as t_fit:
+                    model.fit(X, centroids)
+                t_fit_val = float(t_fit.elapsed)
+            except Exception as e:
+                # Обработка OutOfMemoryError для GPU реализаций
+                error_name = type(e).__name__
+                if "OutOfMemoryError" in error_name or "OutOfMemory" in str(e):
+                    if self.logger:
+                        self.logger.error(
+                            f"{self._dataset_prefix} OutOfMemoryError при run {run_idx}: "
+                            f"{error_name}. Пропуск оставшихся прогонов."
+                        )
+                    # Прерываем цикл и возвращаем частичные результаты
+                    break
+                raise
             times.append(t_fit_val)
 
             # низкоуровневые тайминги шага назначения и обновления

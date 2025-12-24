@@ -49,7 +49,7 @@ REPEATS_SCALING_K: Dict[int, int] = {
 EXPERIMENTS: Dict[ExperimentId, ExperimentConfig] = {
     ExperimentId.BASELINE_SINGLE: ExperimentConfig(
         id=ExperimentId.BASELINE_SINGLE,
-        description="Эксперимент 1: baseline однопоточных реализаций N=100000,D=50,K=8",
+        description="Эксперимент 1: реализация однопоточных реализаций N=100000,D=50,K=8",
         implementations=["python_cpu_numpy", "cpp_single", "csharp_single"],
         params={
             # берём ровно один базовый датасет (purpose="base")

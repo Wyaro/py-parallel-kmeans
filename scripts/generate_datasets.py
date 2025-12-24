@@ -1,8 +1,12 @@
 """
 Генератор синтетических датасетов для бенчмаркинга K-means.
 
-Создаёт наборы данных с различными параметрами N, D, K для экспериментов
-по масштабированию производительности алгоритма кластеризации.
+Модуль создаёт наборы данных с различными параметрами N, D, K для экспериментов
+по масштабированию производительности алгоритма кластеризации (по N, D, K),
+а также небольшой датасет для валидации и сводный JSON-отчёт.
+
+Основной класс: `DatasetGenerator`, точка входа при запуске как скрипта —
+создание всех доступных датасетов (`generate_all()`).
 """
 
 from __future__ import annotations
@@ -12,14 +16,16 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 from sklearn.datasets import make_blobs
 from sklearn.preprocessing import StandardScaler
+import argparse
 
 
-@dataclass
+
+@dataclass(frozen=True)
 class DatasetConfig:
     """Конфигурация параметров датасета."""
 
@@ -34,7 +40,7 @@ class DatasetConfig:
     noise_std: float = 0.1  # Стандартное отклонение шума
 
 
-@dataclass
+@dataclass(frozen=True)
 class GeneratedDataset:
     """Контейнер для сгенерированных данных."""
 
@@ -53,17 +59,28 @@ class DatasetGenerator:
     """
 
     # Директории для различных типов датасетов
-    DIRECTORIES = ["base", "scaling_N", "scaling_D", "scaling_K", "validation"]
+    DIRECTORIES: tuple[str, ...] = (
+        "base",
+        "scaling_N",
+        "scaling_D",
+        "scaling_K",
+        "validation",
+    )
 
-    def __init__(self, base_seed: int = 42) -> None:
+    def __init__(
+        self,
+        base_seed: int = 42,
+        datasets_dir: str | Path = "datasets",
+    ) -> None:
         """
         Инициализация генератора.
 
         Args:
-            base_seed: Базовое значение seed для воспроизводимости
+            base_seed: Базовое значение seed для воспроизводимости.
+            datasets_dir: Базовая директория для сохранения датасетов.
         """
-        self.base_seed = base_seed
-        self.datasets_dir = Path("datasets")
+        self.base_seed: int = base_seed
+        self.datasets_dir: Path = Path(datasets_dir)
         self.create_directory_structure()
 
     def create_directory_structure(self) -> None:
@@ -401,7 +418,7 @@ class DatasetGenerator:
 
                     # Читаем первую строку с метаданными
                     try:
-                        with open(filepath, "r", encoding="utf-8") as f:
+                        with filepath.open("r", encoding="utf-8") as f:
                             first_line = f.readline().strip("# \n")
                             metadata = json.loads(first_line)
                             metadata["filepath"] = str(rel_path)
@@ -455,5 +472,48 @@ class DatasetGenerator:
 
 
 if __name__ == "__main__":
-    generator = DatasetGenerator(base_seed=42)
-    generator.generate_all()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Генерация синтетических датасетов для бенчмаркинга K-means "
+            "и формирование сводного отчёта."
+        )
+    )
+    parser.add_argument(
+        "--datasets-dir",
+        type=Path,
+        default=Path("datasets"),
+        help="Директория для сохранения датасетов (по умолчанию: ./datasets)",
+    )
+    parser.add_argument(
+        "--base-seed",
+        type=int,
+        default=42,
+        help="Базовый seed для генерации (по умолчанию: 42)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["all", "base", "scaling_N", "scaling_D", "scaling_K", "validation"],
+        default="all",
+        help=(
+            "Что генерировать: all (по умолчанию), base, scaling_N, "
+            "scaling_D, scaling_K или validation"
+        ),
+    )
+
+    args = parser.parse_args()
+
+    generator = DatasetGenerator(base_seed=args.base_seed, datasets_dir=args.datasets_dir)
+
+    if args.mode == "all":
+        generator.generate_all()
+    elif args.mode == "base":
+        generator.generate_base_configurations()
+    elif args.mode == "scaling_N":
+        generator.generate_scaling_N()
+    elif args.mode == "scaling_D":
+        generator.generate_scaling_D()
+    elif args.mode == "scaling_K":
+        generator.generate_scaling_K()
+    elif args.mode == "validation":
+        generator.generate_validation_data()
+

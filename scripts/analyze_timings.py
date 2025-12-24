@@ -1,8 +1,12 @@
 """
 Анализ результатов экспериментов по производительности K-means.
 
-Модуль читает результаты таймингов из JSON/NDJSON файла и выводит
-статистику по времени выполнения различных этапов алгоритма.
+Модуль читает результаты таймингов из JSON / NDJSON файла и выводит
+статистику по времени выполнения различных этапов алгоритма K-means.
+
+Поддерживаемые форматы файла результатов:
+- JSON-массив объектов (старый формат);
+- NDJSON (каждая строка — отдельный JSON-объект, новый формат).
 """
 
 from __future__ import annotations
@@ -11,6 +15,58 @@ import json
 from pathlib import Path
 from statistics import mean, median
 from typing import Any, Iterable
+
+import argparse
+
+
+def _determine_experiment(exp_id: str, dataset_info: dict[str, Any]) -> str:
+    """
+    Определяет конкретный эксперимент по ID и параметрам датасета.
+    
+    Если exp_id == "all", пытается определить конкретный эксперимент
+    по параметрам датасета (N, D, K, purpose).
+    
+    Args:
+        exp_id: ID эксперимента из результатов (может быть "all")
+        dataset_info: Информация о датасете (N, D, K, purpose)
+    
+    Returns:
+        Конкретный ID эксперимента (exp1_baseline_single, exp2_scaling_n, и т.д.)
+    """
+    if exp_id != "all":
+        return exp_id
+    
+    N = dataset_info.get("N")
+    D = dataset_info.get("D")
+    K = dataset_info.get("K")
+    purpose = dataset_info.get("purpose")
+    
+    # Эксперимент 1: baseline single
+    if N == 100_000 and D == 50 and K == 8 and purpose == "base":
+        return "exp1_baseline_single"
+    
+    # Эксперимент 5: GPU profile (проверяем раньше exp2, т.к. N=1_000_000 может быть в обоих)
+    # exp5 обычно имеет N=1_000_000, D=50, K=8, но без purpose="scaling_by_N"
+    if N == 1_000_000 and D == 50 and K == 8 and purpose != "scaling_by_N":
+        return "exp5_gpu_profile"
+    
+    # Эксперимент 2: scaling by N
+    scaling_n_values = {1_000, 100_000, 1_000_000, 5_000_000}
+    if purpose == "scaling_by_N" or (N in scaling_n_values and D == 50 and K == 8):
+        return "exp2_scaling_n"
+    
+    # Эксперимент 3: scaling by D
+    scaling_d_values = {2, 10, 50, 100, 200}
+    if purpose == "scaling_by_D" or (D in scaling_d_values and N == 100_000 and K == 8):
+        return "exp3_scaling_d"
+    
+    # Эксперимент 4: scaling by K
+    scaling_k_values = {4, 8, 16, 32}
+    if purpose == "scaling_by_K" or (K in scaling_k_values and N == 100_000 and D == 50):
+        return "exp4_scaling_k"
+    
+    # Если не удалось определить, возвращаем "all"
+    return exp_id
 
 
 class TimingResultsAnalyzer:
@@ -28,8 +84,8 @@ class TimingResultsAnalyzer:
             json_path: Путь к файлу с результатами (JSON или NDJSON)
             n_iters: Количество итераций алгоритма (для нормализации времени)
         """
-        self.json_path = Path(json_path)
-        self.n_iters = n_iters
+        self.json_path: Path = Path(json_path)
+        self.n_iters: int = n_iters
 
         if not self.json_path.exists():
             raise FileNotFoundError(
@@ -145,85 +201,90 @@ class TimingResultsAnalyzer:
         """
         Анализирует результаты и выводит статистику в консоль.
 
-        Для каждого эксперимента выводит:
-        - Средние и медианные значения времени назначения кластеров
-        - Средние и медианные значения времени обновления центроидов
-        - Средние и медианные значения времени одной итерации
-        - Средние и медианные значения общего времени выполнения
+        Для каждого эксперимента выводит компактную таблицу со статистикой.
         Если указан output_path, дополнительно пишет сводку в файл (UTF-8).
         """
-        lines: list[str] = []
+        # Группируем результаты по эксперименту и датасету
+        grouped: dict[tuple[str, int, int, int], list[dict[str, Any]]] = {}
+        
         for entry in self._iter_results():
             exp = entry.get("experiment", "unknown")
-            impl = entry.get("implementation", "unknown")
             dataset_info: dict[str, Any] = entry.get("dataset", {}) or {}
-            timing: dict[str, Any] = entry.get("timing", {}) or {}
-
-            runs = timing.get("runs") or []
-            if not runs:
-                continue
-
-            stats = self._compute_statistics(runs)
             
-            # Вычисляем среднее количество итераций
-            n_iters_list = [
-                float(r.get("n_iters_actual", self.n_iters))
-                for r in runs
-                if r.get("n_iters_actual") is not None
-            ]
-            avg_n_iters = mean(n_iters_list) if n_iters_list else self.n_iters
-
-            print(f"Эксперимент: {exp}, реализация: {impl}")
-            print(
-                f"  Датасет: N={dataset_info.get('N')}, "
-                f"D={dataset_info.get('D')}, "
-                f"K={dataset_info.get('K')}"
+            exp_determined = _determine_experiment(exp, dataset_info)
+            N = dataset_info.get("N", 0)
+            D = dataset_info.get("D", 0)
+            K = dataset_info.get("K", 0)
+            
+            key = (exp_determined, N, D, K)
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(entry)
+        
+        lines: list[str] = []
+        
+        # Сортируем по эксперименту и параметрам датасета
+        for (exp_determined, N, D, K), entries in sorted(grouped.items()):
+            # Заголовок для группы
+            print(f"\n{'='*80}")
+            print(f"{exp_determined} | N={N:,} D={D} K={K}")
+            print(f"{'='*80}")
+            
+            # Заголовок таблицы
+            header = (
+                f"{'Реализация':<30} "
+                f"{'Итер':<6} "
+                f"{'T_назн (мс)':<15} "
+                f"{'T_обн (мс)':<15} "
+                f"{'T_итер (мс)':<15} "
+                f"{'T_общ (мс)':<15}"
             )
-            print(f"  Среднее количество итераций: {avg_n_iters:.1f}")
-            print(
-                f"  Tназначения (одна итерация): "
-                f"ср={stats['assign_mean']:.3f} мс, "
-                f"мед={stats['assign_med']:.3f} мс"
-            )
-            print(
-                f"  Tобновления (одна итерация): "
-                f"ср={stats['update_mean']:.3f} мс, "
-                f"мед={stats['update_med']:.3f} мс"
-            )
-            print(
-                f"  Tитерации (одна итерация): "
-                f"ср={stats['iter_mean']:.3f} мс, "
-                f"мед={stats['iter_med']:.3f} мс"
-            )
-            print(
-                f"  Tобщ (один запуск алгоритма): "
-                f"ср={stats['total_mean']:.3f} мс, "
-                f"мед={stats['total_med']:.3f} мс"
-            )
-            print()
-
-            lines.extend(
-                [
-                    f"Эксперимент: {exp}, реализация: {impl}",
-                    f"  Датасет: N={dataset_info.get('N')}, "
-                    f"D={dataset_info.get('D')}, "
-                    f"K={dataset_info.get('K')}",
-                    f"  Среднее количество итераций: {avg_n_iters:.1f}",
-                    f"  Tназначения (одна итерация): "
-                    f"ср={stats['assign_mean']:.3f} мс, "
-                    f"мед={stats['assign_med']:.3f} мс",
-                    f"  Tобновления (одна итерация): "
-                    f"ср={stats['update_mean']:.3f} мс, "
-                    f"мед={stats['update_med']:.3f} мс",
-                    f"  Tитерации (одна итерация): "
-                    f"ср={stats['iter_mean']:.3f} мс, "
-                    f"мед={stats['iter_med']:.3f} мс",
-                    f"  Tобщ (один запуск алгоритма): "
-                    f"ср={stats['total_mean']:.3f} мс, "
-                    f"мед={stats['total_med']:.3f} мс",
-                    "",
+            print(header)
+            print("-" * 80)
+            
+            lines.append(f"{exp_determined} | N={N:,} D={D} K={K}")
+            lines.append("=" * 80)
+            lines.append(header)
+            lines.append("-" * 80)
+            
+            # Данные для каждой реализации
+            for entry in sorted(entries, key=lambda e: e.get("implementation", "")):
+                impl = entry.get("implementation", "unknown")
+                timing: dict[str, Any] = entry.get("timing", {}) or {}
+                runs = timing.get("runs") or []
+                
+                if not runs:
+                    continue
+                
+                stats = self._compute_statistics(runs)
+                
+                # Вычисляем среднее количество итераций
+                n_iters_list = [
+                    float(r.get("n_iters_actual", self.n_iters))
+                    for r in runs
+                    if r.get("n_iters_actual") is not None
                 ]
-            )
+                avg_n_iters = mean(n_iters_list) if n_iters_list else self.n_iters
+                
+                # Форматируем значения: показываем среднее (медиана в скобках)
+                assign_str = f"{stats['assign_mean']:.3f} ({stats['assign_med']:.3f})"
+                update_str = f"{stats['update_mean']:.3f} ({stats['update_med']:.3f})"
+                iter_str = f"{stats['iter_mean']:.3f} ({stats['iter_med']:.3f})"
+                total_str = f"{stats['total_mean']:.3f} ({stats['total_med']:.3f})"
+                
+                row = (
+                    f"{impl:<30} "
+                    f"{avg_n_iters:>5.1f} "
+                    f"{assign_str:>15} "
+                    f"{update_str:>15} "
+                    f"{iter_str:>15} "
+                    f"{total_str:>15}"
+                )
+                print(row)
+                lines.append(row)
+            
+            print()
+            lines.append("")
 
         if output_path is not None:
             out = Path(output_path)
@@ -243,3 +304,42 @@ def compute_stats_from_results(
     """
     analyzer = TimingResultsAnalyzer(json_path, n_iters)
     analyzer.analyze(output_path=output_path)
+
+
+def _cli() -> None:
+    """CLI-обёртка для анализа таймингов."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Анализ результатов таймингов K-means из JSON/NDJSON "
+            "и вывод агрегированной статистики."
+        )
+    )
+    parser.add_argument(
+        "json_path",
+        type=Path,
+        help="Путь к файлу с результатами таймингов (JSON/NDJSON)",
+    )
+    parser.add_argument(
+        "--n-iters",
+        type=int,
+        default=100,
+        help=(
+            "Количество итераций алгоритма по умолчанию "
+            "(если не указано в самих результатах, по умолчанию: 100)"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Путь к текстовому файлу для сохранения сводки (опционально)",
+    )
+
+    args = parser.parse_args()
+    compute_stats_from_results(
+        json_path=args.json_path, n_iters=args.n_iters, output_path=args.output
+    )
+
+
+if __name__ == "__main__":
+    _cli()

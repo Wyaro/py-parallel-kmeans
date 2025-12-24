@@ -16,9 +16,6 @@ from kmeans.core.gpu_numpy import (
     gpu_available,
     KMeansGPUCuPyV1,
     KMeansGPUCuPyV2,
-    # Алиасы для обратной совместимости
-    KMeansGPUCuPy,
-    KMeansGPUCuPyBincount,
 )
 
 

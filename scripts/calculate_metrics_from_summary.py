@@ -1,16 +1,26 @@
 """
-Скрипт для расчета метрик производительности на основе данных из analysis_summary.txt
+Расчёт производственных метрик на основе текстового summary-файла.
+
+Скрипт парсит `analysis_summary.txt`, сформированный анализом таймингов,
+и вычисляет ряд метрик (ускорение, эффективность, пропускная способность)
+для различных реализаций K-means (CPU / GPU / multiprocessing).
 """
 
+from __future__ import annotations
+
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import argparse
 
-def parse_summary_file(filepath: str) -> List[Dict]:
+
+def parse_summary_file(filepath: str | Path) -> List[Dict]:
     """Парсит файл analysis_summary.txt и извлекает данные о результатах экспериментов."""
-    results = []
-    
-    with open(filepath, 'r', encoding='utf-8') as f:
+    results: list[dict] = []
+
+    filepath = Path(filepath)
+    with filepath.open("r", encoding="utf-8") as f:
         lines = f.readlines()
     
     i = 0
@@ -283,18 +293,30 @@ def format_metrics_output(metrics_results: List[Dict]) -> str:
 
 def main():
     """Основная функция."""
-    import sys
-    
-    input_file = 'analysis_summary.txt'
-    output_file = 'metrics_summary.txt'
-    
-    if len(sys.argv) > 1:
-        input_file = sys.argv[1]
-    if len(sys.argv) > 2:
-        output_file = sys.argv[2]
-    
-    print(f"Чтение данных из {input_file}...")
-    results = parse_summary_file(input_file)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Расчёт производственных метрик на основе файла analysis_summary.txt."
+        )
+    )
+    parser.add_argument(
+        "input_file",
+        nargs="?",
+        type=Path,
+        default=Path("analysis_summary.txt"),
+        help="Входной summary-файл (по умолчанию: ./analysis_summary.txt)",
+    )
+    parser.add_argument(
+        "output_file",
+        nargs="?",
+        type=Path,
+        default=Path("metrics_summary.txt"),
+        help="Файл для записи результатов (по умолчанию: ./metrics_summary.txt)",
+    )
+
+    args = parser.parse_args()
+
+    print(f"Чтение данных из {args.input_file}...")
+    results = parse_summary_file(args.input_file)
     print(f"Найдено {len(results)} результатов экспериментов")
     
     print("Вычисление метрик...")
@@ -311,8 +333,8 @@ def main():
         # Если не получается вывести, просто сохраняем в файл
         print("Результаты сохранены в файл (проблема с кодировкой консоли)")
     
-    print(f"\nСохранение результатов в {output_file}...")
-    with open(output_file, 'w', encoding='utf-8') as f:
+    print(f"\nСохранение результатов в {args.output_file}...")
+    with args.output_file.open('w', encoding='utf-8') as f:
         f.write(output)
     
     print("Готово!")

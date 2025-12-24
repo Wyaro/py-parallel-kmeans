@@ -138,6 +138,22 @@ from scripts.analyze_timings import compute_stats_from_results
 compute_stats_from_results("kmeans_timing_results.json", output_path="timings_report.txt")
 ```
 
+CLI-утилиты для анализа и визуализации:
+
+```bash
+# Анализ таймингов (JSON/NDJSON → текстовый отчёт)
+python -m scripts.analyze_timings kmeans_timing_results.json --n-iters 100 --output timings_report.txt
+
+# Анализ только GPU-реализаций
+python -m scripts.analyze_gpu_results kmeans_timing_results.json
+
+# Расчёт производственных метрик из текстового summary
+python -m scripts.calculate_metrics_from_summary analysis_summary.txt metrics_summary.txt
+
+# Визуализация всех датасетов и HTML-отчёт
+python -m scripts.vizualize_datasets --datasets-dir datasets --output-dir visualizations
+```
+
 ---
 
 ## Быстрая установка
@@ -214,7 +230,7 @@ python main.py
 
 Или только генерация датасетов:
 ```bash
-python -c "from generate_datasets import DatasetGenerator; DatasetGenerator(base_seed=42).generate_all()"
+python -m scripts.generate_datasets --datasets-dir datasets --base-seed 42 --mode all
 ```
 
 ### Подробная установка
@@ -554,7 +570,7 @@ python -m kmeans.main --experiment exp5_gpu_profile
 ### Шаг 3: Анализ результатов
 
 ```bash
-python scripts/analyze_timings.py
+python -m scripts.analyze_timings kmeans_timing_results.json --output timings_report.txt
 # Или программно:
 python -c "from scripts.analyze_timings import compute_stats_from_results; compute_stats_from_results('kmeans_timing_results.json', output_path='timings_report.txt')"
 ```
@@ -587,8 +603,8 @@ python -m kmeans.main --experiment all --gpu-only
 | N | 100,000 |
 | D | 50 |
 | K | 8 |
-| Реализации | `python_cpu_numpy` |
-| Метрики | T_назн, T_обн, T_итер, T_общ |
+| Реализации | `python_cpu_numpy` (однопоточная Python) |
+| Метрики | T_назначения, T_обновления, T_итерации, T_общ (на основе таймингов `analyze_timings`) |
 | Повторы | 30 |
 | Warmup | 3 |
 
@@ -610,7 +626,8 @@ python -m kmeans.main --experiment exp1_baseline_single
 | N | {10³, 10⁵, 10⁶, 5×10⁶} |
 | D | 50 (фиксировано) |
 | K | 8 (фиксировано) |
-| Реализации | CPU (single, multi-process), GPU (все варианты) |
+| Реализации | `python_cpu_numpy` (baseline), `python_cpu_mp_<max_procs>`, все GPU-реализации `python_gpu_cupy*` |
+| Метрики | T_назначения, T_обновления, T_итерации, T_общ, Speedup (S), Efficiency (E), Throughput (ПС), T_transfer, R_transfer |
 | Повторы | 50, 20, 10, 5 соответственно |
 
 **Запуск**:
@@ -633,7 +650,8 @@ python -m kmeans.main --experiment exp2_scaling_n
 | D | {2, 10, 50, 100, 200} |
 | N | 100,000 (фиксировано) |
 | K | 8 (фиксировано) |
-| Реализации | CPU (single, multi-process), GPU (все варианты) |
+| Реализации | `python_cpu_numpy` (baseline), `python_cpu_mp_<max_procs>`, все GPU-реализации `python_gpu_cupy*` |
+| Метрики | T_назначения, T_обновления, T_итерации, T_общ, Speedup (S), Efficiency (E), Throughput (ПС), T_transfer, R_transfer |
 | Повторы | 20, 20, 10, 10, 10 |
 
 **Запуск**:
@@ -652,7 +670,8 @@ python -m kmeans.main --experiment exp3_scaling_d
 | K | {4, 8, 16, 32} |
 | N | 100,000 (фиксировано) |
 | D | 50 (фиксировано) |
-| Реализации | CPU (single, multi-process), GPU (все варианты) |
+| Реализации | `python_cpu_numpy` (baseline), `python_cpu_mp_<max_procs>`, все GPU-реализации `python_gpu_cupy*` |
+| Метрики | T_назначения, T_обновления, T_итерации, T_общ, Speedup (S), Efficiency (E), Throughput (ПС), T_transfer, R_transfer |
 | Повторы | 20, 20, 10, 10 |
 
 **Запуск**:
@@ -879,11 +898,7 @@ model.fit(X, initial_centroids)
 - По умолчанию использует `float32`
 - Быстрее V3 за счет использования raw CUDA kernels
 
-**Примечание**: Для обратной совместимости доступны старые имена:
-- `KMeansGPUCuPy` (алиас для V1)
-- `KMeansGPUCuPyBincount` (алиас для V2)
-- `KMeansGPUCuPyFast` (алиас для V3)
-- `KMeansGPUCuPyRaw` (алиас для V4)
+**Примечание**: Используйте новые названия классов `KMeansGPUCuPyV1`, `KMeansGPUCuPyV2`, `KMeansGPUCuPyV3`, `KMeansGPUCuPyV4` для явного указания версии реализации.
 
 ---
 

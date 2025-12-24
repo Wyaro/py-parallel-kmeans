@@ -6,11 +6,6 @@ from .gpu_numpy import (
     KMeansGPUCuPyV2,
     KMeansGPUCuPyV3,
     KMeansGPUCuPyV4,
-    # Алиасы для обратной совместимости
-    KMeansGPUCuPy,
-    KMeansGPUCuPyBincount,
-    KMeansGPUCuPyFast,
-    KMeansGPUCuPyRaw,
     gpu_available,
 )
 
@@ -22,10 +17,5 @@ __all__ = [
     "KMeansGPUCuPyV2",
     "KMeansGPUCuPyV3",
     "KMeansGPUCuPyV4",
-    # Алиасы для обратной совместимости
-    "KMeansGPUCuPy",
-    "KMeansGPUCuPyBincount",
-    "KMeansGPUCuPyFast",
-    "KMeansGPUCuPyRaw",
     "gpu_available",
 ]

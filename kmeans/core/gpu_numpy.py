@@ -6,12 +6,6 @@ CUDA/CuPy реализации KMeans для бенчмаркинга.
 - KMeansGPUCuPyV2: оптимизированная версия с матричной формулой без diff.
 - KMeansGPUCuPyV3: быстрая версия с float32 и оптимизациями.
 - KMeansGPUCuPyV4: самая быстрая версия с raw CUDA kernels.
-
-Для обратной совместимости также доступны старые имена:
-- KMeansGPUCuPy (алиас для V1)
-- KMeansGPUCuPyBincount (алиас для V2)
-- KMeansGPUCuPyFast (алиас для V3)
-- KMeansGPUCuPyRaw (алиас для V4)
 """
 
 from __future__ import annotations
@@ -157,13 +151,17 @@ class KMeansGPUCuPyV1(_KMeansGPUBase):
     """
     Базовая реализация через CuPy (V1 - самая медленная).
 
-    Прямое броадкаст-вычисление diff: просто и хорошо читается, но требует памяти O(N*K*D).
-    Подходит для умеренных N/K/D и для чистого сравнения с CPU baseline.
+    Использует оптимизированную формулу без материализации diff для экономии памяти.
+    Подходит для всех размеров датасетов, включая большие N.
     """
 
     def assign_clusters(self, X: "cp.ndarray", centroids: "cp.ndarray") -> "cp.ndarray":
-        diff = X[:, None, :] - centroids[None, :, :]  # (N, K, D)
-        distances = cp.einsum("nkd,nkd->nk", diff, diff, optimize=True)
+        # Оптимизированная формула без материализации diff: O(N*K) памяти вместо O(N*K*D)
+        # ||x - c||^2 = ||x||^2 + ||c||^2 - 2 x·c
+        x_sq = cp.sum(X * X, axis=1, keepdims=True)  # (N, 1)
+        c_sq = cp.sum(centroids * centroids, axis=1)  # (K,)
+        cross = X @ centroids.T  # (N, K)
+        distances = x_sq + c_sq[None, :] - 2.0 * cross
         return cp.argmin(distances, axis=1).astype(cp.int32, copy=False)
 
     def update_centroids(self, X: "cp.ndarray", labels: "cp.ndarray") -> "cp.ndarray":
@@ -271,61 +269,139 @@ class KMeansGPUCuPyV3(_KMeansGPUBase):
 
 class KMeansGPUCuPyV4(_KMeansGPUBase):
     """
-    Самая быстрая raw-kernel версия (V4).
+    V4 (improved): реально гибридная версия.
 
-    Отличия от V3:
-    - assign: raw CUDA kernel с ручной оптимизацией (без materialize diff/GEMM).
-    - update: raw CUDA kernel с атомарными операциями для максимальной производительности.
-    - float32 по умолчанию для меньшего трафика и памяти.
-    Подходит при умеренных K (например, K<=64) и средних D; не требует больших временных буферов.
+    - assign:
+        * D <= ASSIGN_RAW_MAX_D: raw-kernel (быстро на очень малых D)
+        * иначе: GEMM-формула (как V3), т.к. cuBLAS почти всегда выигрывает на D>=32
+      Плюс: x_sq кэшируется (X неизменен в fit).
+
+    - update:
+        * small-case (K <= 32, D <= 32, K*D <= 1024): двухпроходная редукция (без глобальных атомиков)
+        * иначе: fallback на V3 update (bincount + add.at)
+
+    Важно: никаких synchronize() внутри алгоритма.
     """
 
-    _ASSIGN_KERNEL = r"""
+    # --- Пороги (эмпирические; вы можете подогнать под свою GPU) ---
+    ASSIGN_RAW_MAX_D = 16
+    UPDATE_MAX_K = 32
+    UPDATE_MAX_D = 32
+    UPDATE_MAX_KD = 1024
+
+    _ASSIGN_KERNEL_SMALLD = r"""
     extern "C" __global__
-    void assign_kernel(const float* __restrict__ X,
+    void assign_smallD(const float* __restrict__ X,
                        const float* __restrict__ C,
+                       const float* __restrict__ x_sq,
+                       const float* __restrict__ c_sq,
                        int* __restrict__ labels,
                        const int N, const int D, const int K) {
         int i = blockDim.x * blockIdx.x + threadIdx.x;
         if (i >= N) return;
-        const float* x = X + i * D;
+
+        const float* x = X + (size_t)i * (size_t)D;
+        float x_norm = x_sq[i];
+
         float best = 1e30f;
         int best_k = 0;
+
+        // D <= 16 ожидается по диспатчу
         for (int k = 0; k < K; ++k) {
-            const float* c = C + k * D;
-            float dist = 0.0f;
-            #pragma unroll 4
-            for (int d = 0; d < D; ++d) {
-                float diff = x[d] - c[d];
-                dist += diff * diff;
+            const float* c = C + (size_t)k * (size_t)D;
+            float dot = 0.0f;
+
+            #pragma unroll
+            for (int d = 0; d < 16; ++d) {
+                if (d < D) dot += x[d] * c[d];
             }
+
+            float dist = x_norm + c_sq[k] - 2.0f * dot;
             if (dist < best) { best = dist; best_k = k; }
         }
+
         labels[i] = best_k;
     }
     """
-    
-    _UPDATE_KERNEL = r"""
+
+    # Kernel 1: частичные суммы/счётчики по блокам без глобальных атомиков
+    # partial_sums: [num_blocks, K, D], partial_counts: [num_blocks, K]
+    _UPDATE_PARTIAL_KERNEL = r"""
     extern "C" __global__
-    void update_kernel(const float* __restrict__ X,
-                       const int* __restrict__ labels,
-                       float* __restrict__ sums,
-                       int* __restrict__ counts,
-                       const int N, const int D, const int K) {
-        int idx = blockDim.x * blockIdx.x + threadIdx.x;
-        if (idx >= N) return;
-        
-        int label = labels[idx];
-        if (label < 0 || label >= K) return;
-        
-        // Атомарное добавление к счетчикам (int)
-        atomicAdd(&counts[label], 1);
-        
-        // Атомарное добавление к суммам (float)
-        // atomicAdd для float доступен на compute capability 2.0+
-        for (int d = 0; d < D; ++d) {
-            atomicAdd(&sums[label * D + d], X[idx * D + d]);
+    void update_partial(const float* __restrict__ X,
+                        const int* __restrict__ labels,
+                        float* __restrict__ partial_sums,
+                        int* __restrict__ partial_counts,
+                        const int N, const int D, const int K) {
+        int tid = threadIdx.x;
+        int bid = blockIdx.x;
+        int idx = bid * blockDim.x + tid;
+
+        // Плоские индексы в выходных буферах
+        // partial_sums[(bid*K + k)*D + d]
+        // partial_counts[bid*K + k]
+
+        // Инициализация partial для этого блока: параллельно по tid
+        // (K*D + K) элементов
+        int total_f = K * D;
+        for (int t = tid; t < total_f; t += blockDim.x) {
+            partial_sums[(size_t)bid * (size_t)total_f + (size_t)t] = 0.0f;
         }
+        for (int t = tid; t < K; t += blockDim.x) {
+            partial_counts[bid * K + t] = 0;
+        }
+        __syncthreads();
+
+        if (idx >= N) return;
+
+        int k = labels[idx];
+        if (k < 0 || k >= K) return;
+
+        // Для small-case разрешаем атомики только в пределах блока (в shared было бы лучше,
+        // но здесь мы пишем в global partial буфер, который уникален для блока -> contention ограничен
+        // потоками одного блока).
+        atomicAdd(&partial_counts[bid * K + k], 1);
+
+        const float* x = X + (size_t)idx * (size_t)D;
+        float* ps = partial_sums + ((size_t)bid * (size_t)K + (size_t)k) * (size_t)D;
+
+        for (int d = 0; d < D; ++d) {
+            atomicAdd(&ps[d], x[d]);
+        }
+    }
+    """
+
+    # Kernel 2: редукция по блокам -> итоговые sums/counts (без атомиков: один поток на (k,d))
+    _UPDATE_REDUCE_KERNEL = r"""
+    extern "C" __global__
+    void reduce_partials(const float* __restrict__ partial_sums,
+                         const int* __restrict__ partial_counts,
+                         float* __restrict__ sums,
+                         int* __restrict__ counts,
+                         const int num_blocks,
+                         const int D, const int K) {
+        int k = blockIdx.x;      // 0..K-1
+        int d = threadIdx.x;     // 0..D-1  (D <= 32 ожидается)
+
+        if (k >= K || d >= D) return;
+
+        float acc = 0.0f;
+        int cacc = 0;
+
+        // Суммируем по блокам
+        for (int b = 0; b < num_blocks; ++b) {
+            acc += partial_sums[((size_t)b * (size_t)K + (size_t)k) * (size_t)D + (size_t)d];
+        }
+
+        // counts считаем только одним d==0 потоком
+        if (d == 0) {
+            for (int b = 0; b < num_blocks; ++b) {
+                cacc += partial_counts[b * K + k];
+            }
+            counts[k] = cacc;
+        }
+
+        sums[(size_t)k * (size_t)D + (size_t)d] = acc;
     }
     """
 
@@ -339,70 +415,95 @@ class KMeansGPUCuPyV4(_KMeansGPUBase):
     ) -> None:
         super().__init__(n_clusters=n_clusters, n_iters=n_iters, tol=tol, logger=logger)
         self._dtype = cp.float32 if use_float32 else cp.float64
-        # компилируем кернелы один раз
-        self._assign_kernel = cp.RawKernel(self._ASSIGN_KERNEL, "assign_kernel")
-        self._update_kernel = cp.RawKernel(self._UPDATE_KERNEL, "update_kernel")
+
+        self._assign_smallD = cp.RawKernel(self._ASSIGN_KERNEL_SMALLD, "assign_smallD")
+        self._update_partial = cp.RawKernel(self._UPDATE_PARTIAL_KERNEL, "update_partial")
+        self._reduce_partials = cp.RawKernel(self._UPDATE_REDUCE_KERNEL, "reduce_partials")
+
+        # cache (valid within one fit run)
+        self._x_sq_cache: "cp.ndarray | None" = None
 
     def _to_gpu(self, X: np.ndarray) -> "cp.ndarray":
         return cp.asarray(X, dtype=self._dtype, order="C")
 
+    def fit(self, X: np.ndarray, initial_centroids: np.ndarray) -> None:
+        # сбрасываем cache на новый запуск
+        self._x_sq_cache = None
+        super().fit(X, initial_centroids)
+
+    def _ensure_x_sq(self, X_f32: "cp.ndarray") -> "cp.ndarray":
+        if self._x_sq_cache is None or self._x_sq_cache.shape[0] != X_f32.shape[0]:
+            self._x_sq_cache = cp.sum(X_f32 * X_f32, axis=1)  # (N,)
+        return self._x_sq_cache
+
     def assign_clusters(self, X: "cp.ndarray", centroids: "cp.ndarray") -> "cp.ndarray":
         N, D = X.shape
         K = self.K
-        labels = cp.empty(N, dtype=cp.int32)
 
-        # запускаем один кернел для всего набора
-        threads = 256
-        blocks = (N + threads - 1) // threads
-        self._assign_kernel(
-            (blocks,),
-            (threads,),
-            (X.astype(cp.float32, copy=False),  # гарантируем float32 для ядра
-             centroids.astype(cp.float32, copy=False),
-             labels,
-             N, D, K),
-        )
-        return labels
+        X_f32 = X.astype(cp.float32, copy=False)
+        C_f32 = centroids.astype(cp.float32, copy=False)
+
+        x_sq = self._ensure_x_sq(X_f32)
+        c_sq = cp.sum(C_f32 * C_f32, axis=1)  # (K,)
+
+        # Диспатч: raw только для малых D, иначе GEMM (V3 формула)
+        if D <= self.ASSIGN_RAW_MAX_D:
+            labels = cp.empty(N, dtype=cp.int32)
+            threads = 256
+            blocks = (N + threads - 1) // threads
+            self._assign_smallD(
+                (blocks,),
+                (threads,),
+                (X_f32, C_f32, x_sq, c_sq, labels, N, D, K),
+            )
+            return labels
+
+        # GEMM-путь (на D>=32 обычно быстрее raw)
+        # ||x-c||^2 = ||x||^2 + ||c||^2 - 2 x·c
+        cross = X_f32 @ C_f32.T
+        distances = x_sq[:, None] + c_sq[None, :] - 2.0 * cross
+        return cp.argmin(distances, axis=1).astype(cp.int32, copy=False)
 
     def update_centroids(self, X: "cp.ndarray", labels: "cp.ndarray") -> "cp.ndarray":
         N, D = X.shape
         K = self.K
-        
-        # Используем raw CUDA kernel для максимальной производительности
-        # Raw kernel использует float32 (hardcoded), поэтому приводим к float32
         X_f32 = X.astype(cp.float32, copy=False)
-        sums = cp.zeros((K, D), dtype=cp.float32)
-        counts = cp.zeros(K, dtype=cp.int32)
-        
-        # Запускаем raw kernel для редукции
-        threads = 256
-        blocks = (N + threads - 1) // threads
-        self._update_kernel(
-            (blocks,),
-            (threads,),
-            (X_f32,
-             labels.astype(cp.int32, copy=False),
-             sums,
-             counts,
-             N, D, K),
-        )
-        
-        # Синхронизируем перед вычислением центроидов
-        # Ждем завершения всех операций на GPU
-        # В CuPy операции обычно синхронные, но для raw kernel нужна явная синхронизация
-        # Используем getDevice() для получения текущего устройства и синхронизации
-        device = cp.cuda.Device()
-        device.synchronize()
-        
+        labels_i32 = labels.astype(cp.int32, copy=False)
+
+        # Диспатч: двухпроходная редукция только для small-case
+        use_two_pass = (K <= self.UPDATE_MAX_K) and (D <= self.UPDATE_MAX_D) and (K * D <= self.UPDATE_MAX_KD)
+
+        if not use_two_pass:
+            # Fallback на стабильный V3 update
+            counts = cp.bincount(labels_i32, minlength=K).astype(cp.int32, copy=False)
+            sums = cp.zeros((K, D), dtype=cp.float32)
+            cp.add.at(sums, labels_i32, X_f32)
+        else:
+            threads = 256
+            blocks = (N + threads - 1) // threads
+            num_blocks = int(blocks)
+
+            # partial buffers
+            partial_sums = cp.empty((num_blocks, K, D), dtype=cp.float32)
+            partial_counts = cp.empty((num_blocks, K), dtype=cp.int32)
+
+            self._update_partial(
+                (num_blocks,),
+                (threads,),
+                (X_f32, labels_i32, partial_sums, partial_counts, N, D, K),
+            )
+
+            sums = cp.empty((K, D), dtype=cp.float32)
+            counts = cp.empty((K,), dtype=cp.int32)
+
+            # grid: K блоков; threads: D (<=32 по диспатчу)
+            self._reduce_partials(
+                (K,),
+                (max(32, D),),  # безопасно: лишние потоки сами выйдут
+                (partial_sums, partial_counts, sums, counts, num_blocks, D, K),
+            )
+
         new_centroids = cp.zeros_like(sums)
         non_empty = counts > 0
         new_centroids[non_empty] = sums[non_empty] / counts[non_empty, None]
-
         return self._merge_centroids(new_centroids, non_empty)
-
-
-# Алиасы для обратной совместимости
-KMeansGPUCuPy = KMeansGPUCuPyV1
-KMeansGPUCuPyBincount = KMeansGPUCuPyV2
-KMeansGPUCuPyFast = KMeansGPUCuPyV3
-KMeansGPUCuPyRaw = KMeansGPUCuPyV4
